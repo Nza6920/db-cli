@@ -1,10 +1,11 @@
-# db-query
+# db-cli
 
 English | [简体中文](README.zh-CN.md)
 
-`db-query` is a profile-aware, read-only MySQL wrapper around
-[`usql`](https://github.com/xo/usql). It accepts MySQL or JDBC MySQL URLs while
-keeping passwords out of persistent configuration files and process arguments.
+`db-cli` is a profile-aware, read-only MySQL wrapper around
+[`usql`](https://github.com/xo/usql). It provides the `db-query` command, accepts
+MySQL or JDBC MySQL URLs, and keeps passwords out of persistent configuration
+files and process arguments.
 
 ## Implemented capabilities
 
@@ -44,14 +45,14 @@ keeping passwords out of persistent configuration files and process arguments.
 Install `usql` first, then install this CLI from the repository root:
 
 ```bash
-pipx install ./db-query
+pipx install .
 db-query --help
 ```
 
 ## Configure
 
 Copy [`config.example.toml`](config.example.toml) to
-`${XDG_CONFIG_HOME:-~/.config}/db-query/config.toml`, edit its profiles, and
+`${XDG_CONFIG_HOME:-~/.config}/db-cli/config.toml`, edit its profiles, and
 export each profile's password in the named environment variable:
 
 ```bash
@@ -61,7 +62,7 @@ db-query validate
 ```
 
 Configuration lookup order is `--config`, `DB_QUERY_CONFIG`,
-`XDG_CONFIG_HOME/db-query/config.toml`, then `~/.config/db-query/config.toml`.
+`XDG_CONFIG_HOME/db-cli/config.toml`, then `~/.config/db-cli/config.toml`.
 File ownership, symlink, and broad-permission findings are warnings. Plaintext
 `password` and `pass` fields are rejected.
 
@@ -129,6 +130,6 @@ db-query validate --profile prod --connect --confirm-profile prod
 ## Develop
 
 ```bash
-cd db-query
+cd db-cli
 python3 -m unittest discover -s tests -v
 ```

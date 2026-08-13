@@ -46,7 +46,7 @@ def config_path(explicit: str | None = None) -> Path:
         return Path(env_path).expanduser()
     config_home = os.environ.get("XDG_CONFIG_HOME")
     base = Path(config_home).expanduser() if config_home else Path.home() / ".config"
-    return base / "db-query" / "config.toml"
+    return base / "db-cli" / "config.toml"
 
 
 def load_config(path: Path) -> Config:

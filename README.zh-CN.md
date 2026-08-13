@@ -1,10 +1,10 @@
-# db-query
+# db-cli
 
 [English](README.md) | 简体中文
 
-`db-query` 是基于 [`usql`](https://github.com/xo/usql) 封装的、支持 profile
-的只读 MySQL 查询工具。它接受 MySQL URL 或 JDBC MySQL URL，同时避免密码
-出现在持久化配置文件和进程参数中。
+`db-cli` 是基于 [`usql`](https://github.com/xo/usql) 封装的、支持 profile
+的只读 MySQL 查询工具。它提供 `db-query` 命令，接受 MySQL URL 或 JDBC
+MySQL URL，同时避免密码出现在持久化配置文件和进程参数中。
 
 ## 已实现能力
 
@@ -40,14 +40,14 @@
 先安装 `usql`，然后在仓库根目录安装此 CLI：
 
 ```bash
-pipx install ./db-query
+pipx install .
 db-query --help
 ```
 
 ## 配置
 
 将 [`config.example.toml`](config.example.toml) 复制到
-`${XDG_CONFIG_HOME:-~/.config}/db-query/config.toml`，编辑其中的 profiles，
+`${XDG_CONFIG_HOME:-~/.config}/db-cli/config.toml`，编辑其中的 profiles，
 再通过各 profile 指定的环境变量提供密码：
 
 ```bash
@@ -57,7 +57,7 @@ db-query validate
 ```
 
 配置查找优先级依次为 `--config`、`DB_QUERY_CONFIG`、
-`XDG_CONFIG_HOME/db-query/config.toml`、`~/.config/db-query/config.toml`。
+`XDG_CONFIG_HOME/db-cli/config.toml`、`~/.config/db-cli/config.toml`。
 文件所有者、符号链接及权限过宽只会产生警告。配置中出现明文 `password`
 或 `pass` 字段时会被拒绝。
 
@@ -121,6 +121,6 @@ db-query validate --profile prod --connect --confirm-profile prod
 ## 开发
 
 ```bash
-cd db-query
+cd db-cli
 python3 -m unittest discover -s tests -v
 ```
