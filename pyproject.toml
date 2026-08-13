@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=65", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "db-query"
+version = "0.1.2"
+description = "A profile-aware, read-only MySQL query wrapper for usql"
+requires-python = ">=3.11"
+
+[project.scripts]
+db-query = "db_query.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

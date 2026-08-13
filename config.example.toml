@@ -1,0 +1,16 @@
+[profiles.prod]
+url = "jdbc:mysql://jms.newchiwan.cn:33061/"
+username = "readonly_user"
+password_env = "DB_QUERY_PROD_PASSWORD"
+environment = "production"
+# This server does not advertise MySQL TLS. Traffic may be unencrypted.
+tls = "disabled"
+connect_timeout_seconds = 5
+query_timeout_seconds = 30
+
+[profiles.uat]
+url = "jdbc:mysql://uat-db.example.cn:3306/"
+username = "readonly_user"
+password_env = "DB_QUERY_UAT_PASSWORD"
+environment = "staging"
+tls = "required"
