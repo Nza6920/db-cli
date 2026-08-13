@@ -6,6 +6,39 @@ English | [简体中文](README.zh-CN.md)
 [`usql`](https://github.com/xo/usql). It accepts MySQL or JDBC MySQL URLs while
 keeping passwords out of persistent configuration files and process arguments.
 
+## Implemented capabilities
+
+- **Multiple environments** — define named profiles for development, test,
+  staging, and production, and select one explicitly for every query.
+- **MySQL and JDBC MySQL URLs** — accept `mysql://` and `jdbc:mysql://` URLs,
+  including IPv6 hosts and percent-encoded database names.
+- **JDBC option conversion** — translate `connectTimeout`, `socketTimeout`, and
+  `useSSL` into the case-sensitive options expected by the Go MySQL driver.
+- **Environment-based credentials** — keep passwords in profile-specific
+  environment variables; reject plaintext `password` and `pass` config fields.
+- **Read-only SQL guardrails** — allow one `SELECT`, read-only `WITH`, `SHOW`,
+  `DESC`/`DESCRIBE`, or `EXPLAIN` statement while rejecting writes, multiple
+  statements, meta-commands, exports, locking reads, advisory locks, and MySQL
+  executable comments.
+- **Bounded detail queries** — require an outer literal `LIMIT` of at most 1000
+  for non-aggregate queries with a top-level `FROM`.
+- **Production confirmation** — require an exact `--confirm-profile` match for
+  production queries and production connection tests.
+- **TLS policy** — support `required`, `preferred`, and `disabled`; TLS defaults
+  to `required`, while insecure production profiles emit a scoped warning.
+- **Timeout protection** — apply configurable connection and query timeouts with
+  a 120-second configuration ceiling.
+- **Structured output** — return JSON by default, with table and CSV passthrough
+  formats for terminal use.
+- **Offline and online validation** — validate profiles without network access,
+  or explicitly test one connection with `validate --connect`.
+- **Credential-safe usql execution** — pass SQL through a temporary `0600` file,
+  use a temporary URL-encoded usql DSN, redact credentials from errors, and
+  remove temporary files after execution.
+- **Stable automation errors** — expose structured error codes and distinct exit
+  codes for configuration, credentials, connection, query, timeout, and missing
+  `usql` failures.
+
 ## Install
 
 Install `usql` first, then install this CLI from the repository root:

@@ -6,6 +6,35 @@
 的只读 MySQL 查询工具。它接受 MySQL URL 或 JDBC MySQL URL，同时避免密码
 出现在持久化配置文件和进程参数中。
 
+## 已实现能力
+
+- **多环境配置**：支持 development、test、staging 和 production 命名
+  profiles，每次查询都需要显式选择 profile。
+- **MySQL 与 JDBC MySQL URL**：接受 `mysql://` 和 `jdbc:mysql://` URL，
+  支持 IPv6 host 和经过 percent-encode 的 database name。
+- **JDBC 参数转换**：将 `connectTimeout`、`socketTimeout` 和 `useSSL`
+  转换为 Go MySQL driver 所需的、区分大小写的参数。
+- **环境变量凭据**：每个 profile 通过独立环境变量读取密码；配置中出现
+  明文 `password` 或 `pass` 字段时会被拒绝。
+- **只读 SQL guardrails**：只允许一条 `SELECT`、只读 `WITH`、`SHOW`、
+  `DESC`/`DESCRIBE` 或 `EXPLAIN`；拒绝写操作、多语句、meta-command、
+  导出、锁定读、advisory lock 和 MySQL executable comment。
+- **限制明细查询规模**：包含顶层 `FROM` 的非聚合查询必须使用最外层
+  字面量 `LIMIT`，且不得超过 1000。
+- **production 二次确认**：production 查询及连接测试必须提供完全匹配的
+  `--confirm-profile`。
+- **TLS 策略**：支持 `required`、`preferred` 和 `disabled`；默认使用
+  `required`，production 关闭或降级 TLS 时会输出与当前 profile 相关的警告。
+- **超时保护**：支持配置连接和查询超时，配置硬上限为 120 秒。
+- **结构化输出**：默认返回 JSON，同时支持适合终端使用的 table 和 CSV
+  passthrough 输出。
+- **离线与在线校验**：可在不访问网络的情况下校验 profiles，也可通过
+  `validate --connect` 显式测试一个连接。
+- **凭据安全的 usql 执行**：SQL 和 URL-encoded usql DSN 写入临时 `0600`
+  文件；错误信息会脱敏，执行结束后自动删除临时文件。
+- **稳定的自动化错误**：针对配置、凭据、连接、查询、超时以及缺少 `usql`
+  等失败提供结构化 error code 和不同 exit code。
+
 ## 安装
 
 先安装 `usql`，然后在仓库根目录安装此 CLI：
@@ -74,8 +103,8 @@ row count 和 rows。
 安全扫描器只接受一条 `SELECT`、只读 `WITH`、`SHOW`、
 `DESC`/`DESCRIBE` 或 `EXPLAIN` 语句。明细查询必须在最外层使用字面量
 `LIMIT`，且不得超过 1000。写操作、usql meta-command、多语句、导出子句、
-锁定读、advisory lock 和 MySQL executable comment 均会被拒绝。数据库账号
-没有顶层 `FROM` 的常量查询（例如 `SELECT 1`）不要求 `LIMIT`。数据库账号
+锁定读、advisory lock 和 MySQL executable comment 均会被拒绝。没有顶层
+`FROM` 的常量查询（例如 `SELECT 1`）不要求 `LIMIT`。数据库账号
 自身仍应只有只读权限：客户端校验属于 defense in depth，不能替代数据库
 授权边界。
 
