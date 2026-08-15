@@ -2,53 +2,60 @@
 
 [English](README.md) | 简体中文
 
-`db-cli` 是基于 [`usql`](https://github.com/xo/usql) 封装的、支持 profile
-的只读 MySQL 查询工具。它提供 `db-query` 命令，接受 MySQL URL 或 JDBC
-MySQL URL，同时避免密码出现在持久化配置文件和进程参数中。
+`db-cli` 提供支持 profile 的只读 MySQL 命令 `db-query`。0.2.0 版本通过固定
+版本的 Python 依赖直接连接数据库，因此正常的 pipx 安装不再需要单独的 SQL
+客户端。它接受 MySQL 和 JDBC MySQL URL，并避免将密码写入持久化配置。
 
-## 已实现能力
+## 功能
 
-- **多环境配置**：支持 development、test、staging 和 production 命名
-  profiles，每次查询都需要显式选择 profile。
-- **MySQL 与 JDBC MySQL URL**：接受 `mysql://` 和 `jdbc:mysql://` URL，
-  支持 IPv6 host 和经过 percent-encode 的 database name。
-- **JDBC 参数转换**：将 `connectTimeout`、`socketTimeout` 和 `useSSL`
-  转换为 Go MySQL driver 所需的、区分大小写的参数。
-- **环境变量凭据**：每个 profile 通过独立环境变量读取密码；配置中出现
-  明文 `password` 或 `pass` 字段时会被拒绝。
-- **只读 SQL guardrails**：只允许一条 `SELECT`、只读 `WITH`、`SHOW`、
-  `DESC`/`DESCRIBE` 或 `EXPLAIN`；拒绝写操作、多语句、meta-command、
-  导出、锁定读、advisory lock 和 MySQL executable comment。
-- **限制明细查询规模**：包含顶层 `FROM` 的非聚合查询必须使用最外层
-  字面量 `LIMIT`，且不得超过 1000。
-- **production 二次确认**：production 查询及连接测试必须提供完全匹配的
+- 每次查询明确选择一个 development、test、staging 或 production profile。
+- 接受 `mysql://` 和 `jdbc:mysql://` URL，包括 IPv6 host 和经过
+  percent-encode 的 database name。
+- 密码只从 profile 指定的环境变量读取；拒绝明文 `password` 或 `pass` 字段。
+- 只允许一条 `SELECT`、只读 `WITH`、`SHOW`、`DESC`/`DESCRIBE` 或
+  `EXPLAIN`；拒绝写操作、多语句、客户端 meta-command、导出、锁定读、
+  advisory lock 和 executable comment。
+- 包含顶层 `FROM` 的非聚合明细查询必须使用最外层字面量 `LIMIT`，且不超过
+  1000。
+- production 查询和 production 连接测试必须提供完全匹配的
   `--confirm-profile`。
-- **TLS 策略**：支持 `required`、`preferred` 和 `disabled`；默认使用
-  `required`，production 关闭或降级 TLS 时会输出与当前 profile 相关的警告。
-- **超时保护**：支持配置连接和查询超时，配置硬上限为 120 秒。
-- **结构化输出**：默认返回 JSON，同时支持适合终端使用的 table 和 CSV
-  passthrough 输出。
-- **离线与在线校验**：可在不访问网络的情况下校验 profiles，也可通过
-  `validate --connect` 显式测试一个连接。
-- **凭据安全的 usql 执行**：SQL 和 URL-encoded usql DSN 写入临时 `0600`
-  文件；错误信息会脱敏，执行结束后自动删除临时文件。
-- **稳定的自动化错误**：针对配置、凭据、连接、查询、超时以及缺少 `usql`
-  等失败提供结构化 error code 和不同 exit code。
+- 每个连接启用 autocommit、禁用 local infile，并在执行 SQL 前将 session
+  transaction mode 设置为只读并验证结果。
+- 支持 `required`、`preferred` 和 `disabled` TLS 模式；
+  `validate --connect` 通过 `tls_active` 返回实际协商状态。
+- 默认返回稳定 JSON，也支持标准 CSV 和 SQL 风格 table。
+- 对配置、凭据、连接、查询、socket 超时和结果编码失败返回结构化错误。
 
 ## 安装
 
-先安装 `usql`，然后在仓库根目录安装此 CLI：
+使用 pipx 安装固定的 GitHub release。PyMySQL、RSA 支持和 tabulate 会随应用
+一起安装，不需要 `usql`。
 
 ```bash
-pipx install .
+pipx install "git+https://github.com/Nza6920/db-cli.git@v0.2.0"
 db-query --help
+```
+
+开发中的本地 checkout 可在仓库根目录执行 `pipx install --force .`。
+
+## 兼容性与回滚
+
+| db-query | 执行和格式化依赖 | 运行时 SQL 客户端 |
+| --- | --- | --- |
+| v0.1.2 | usql 0.21.4 | 需要单独安装 `usql` |
+| v0.2.0 | PyMySQL 1.2.0、tabulate 0.10.0 | 无 |
+
+如需回滚，请安装固定的 v0.1.2 tag，并恢复 usql 0.21.4：
+
+```bash
+pipx install --force "git+https://github.com/Nza6920/db-cli.git@v0.1.2"
 ```
 
 ## 配置
 
 将 [`config.example.toml`](config.example.toml) 复制到
-`${XDG_CONFIG_HOME:-~/.config}/db-cli/config.toml`，编辑其中的 profiles，
-再通过各 profile 指定的环境变量提供密码：
+`${XDG_CONFIG_HOME:-~/.config}/db-cli/config.toml`，编辑 profiles，再通过各
+profile 指定的环境变量提供密码：
 
 ```bash
 export DB_QUERY_PROD_PASSWORD='<password>'
@@ -56,23 +63,20 @@ db-query profiles
 db-query validate
 ```
 
-配置查找优先级依次为 `--config`、`DB_QUERY_CONFIG`、
+配置查找顺序为 `--config`、`DB_QUERY_CONFIG`、
 `XDG_CONFIG_HOME/db-cli/config.toml`、`~/.config/db-cli/config.toml`。
-文件所有者、符号链接及权限过宽只会产生警告。配置中出现明文 `password`
-或 `pass` 字段时会被拒绝。
+文件所有者、符号链接和权限过宽会产生警告。明文密码字段会被拒绝。
 
 支持的 JDBC URL 参数为 `connectTimeout`、`socketTimeout` 和 `useSSL`。
-显式 profile timeout 和 TLS 字段优先，其次采用 JDBC URL 参数，最后使用
-5 秒连接超时和 30 秒查询超时的默认值。未知 JDBC 参数会被拒绝，不会被
-静默忽略。
+显式 profile timeout 和 TLS 字段优先，其次是 JDBC URL 参数，最后使用 5 秒
+连接超时和 30 秒查询超时的默认值。未知 JDBC 参数会被拒绝。连接超时映射到
+driver connection timeout；查询超时映射到 read/write socket timeout。因此
+`QUERY_TIMEOUT` 表示 driver/socket 超时，而不是严格的总 wall-clock deadline。
 
-包括 production 在内，TLS 默认为 `required`。production profile 可以显式
-选择 `preferred` 或 `disabled`；`db-query` 会允许执行，但会警告数据库流量
-可能未加密。
-
-`db-query` 会将完整且经过 URL encode 的 DSN 写入临时的 `0600` usql 配置，
-从而保留 MySQL driver 中区分大小写的 `readTimeout` 和 `writeTimeout` 参数。
-命令结束后会删除临时目录。
+TLS 默认为 `required`，会验证系统信任链和 hostname。`preferred` 在服务端
+提供 TLS 时使用 TLS，只在 TLS 不可用时允许明文回退。`disabled` 禁止 TLS。
+production profile 可以显式选择较弱模式，但命令会输出与该 profile 相关的
+警告。
 
 ## 查询
 
@@ -87,29 +91,28 @@ LIMIT 20;
 SQL
 ```
 
-若 SQL 末尾没有分号，wrapper 会自动补充分号；否则 `usql --file` 会在未执行
-query buffer 中语句的情况下以成功状态退出。
-
-production 查询必须先审查 SQL，再提供完全匹配的显式确认参数：
+production 查询必须先审查准确的 profile 和 SQL，再提供完全匹配的确认：
 
 ```bash
 db-query query --profile prod --confirm-profile prod --stdin
 ```
 
-面向人工阅读时，可以使用 `--format table` 或 `--format csv` 直接输出。
-默认格式为 JSON，其中包含 profile、environment、duration、columns、
-row count 和 rows。
+默认 JSON 包含 profile、environment、duration、顺序固定的 columns、row
+count 和 rows。`--format csv` 使用标准 CSV quoting，以 `\N` 表示 null，并将
+空字符串保留为空字段。`--format table` 使用 SQL 风格的 `psql` 布局，以
+`NULL` 表示 null，并关闭数字解析，从而保留前导零和高精度数字字符串。
 
-安全扫描器只接受一条 `SELECT`、只读 `WITH`、`SHOW`、
-`DESC`/`DESCRIBE` 或 `EXPLAIN` 语句。明细查询必须在最外层使用字面量
-`LIMIT`，且不得超过 1000。写操作、usql meta-command、多语句、导出子句、
-锁定读、advisory lock 和 MySQL executable comment 均会被拒绝。没有顶层
-`FROM` 的常量查询（例如 `SELECT 1`）不要求 `LIMIT`。数据库账号
-自身仍应只有只读权限：客户端校验属于 defense in depth，不能替代数据库
-授权边界。
+所有格式使用同一套标量语义：Decimal 为字符串；整数和 MySQL boolean alias
+保持 JSON number；date 为 `YYYY-MM-DD`；datetime 为不带时区的 ISO 8601；
+带符号的 MySQL time 保留符号和微秒；binary 使用可逆的小写 `0x` 前缀十六
+进制。重复结果列名会返回 `RESULT_ENCODING_FAILED`，调用方需要提供唯一 SQL
+alias。工具没有总输出字节上限，因此即使明细行数受限，也应避免选择大型
+binary 字段。
 
-warning 只针对当前命令涉及的 profiles。列出全部 profiles 时可能看到某项
-warning，而指定单个 profile 查询时不会显示无关 warning。
+安全扫描器只接受一条受支持的只读语句。明细查询必须使用不超过 1000 的
+最外层字面量 `LIMIT`；没有顶层 `FROM` 的常量查询（如 `SELECT 1`）不需要
+`LIMIT`。数据库账号自身仍应只有只读权限：静态扫描和 session 只读模式属于
+defense in depth，不能替代数据库授权。
 
 默认只离线校验配置；也可以显式测试指定连接：
 
@@ -120,27 +123,26 @@ db-query validate --profile prod --connect --confirm-profile prod
 
 ## Skill
 
-仓库内显式调用的 `$db-query` skill 位于
+显式调用的 `$db-query` skill 位于
 [`.agents/skills/db-query/SKILL.md`](.agents/skills/db-query/SKILL.md)：
 
 ```text
 $db-query 使用 prod profile 查询项目 252143 最近 20 条运单
 ```
 
-它不会因普通的数据库讨论自动触发。每次调用只选择一个明确的 profile，
-并且每次只执行一条有范围限制的只读 SQL。对于 production，skill 会先展示
-完整的 profile 和 SQL，并等待用户明确批准这个未发生变化的组合；SQL 或
-profile 发生任何变化都必须重新批准。结果会区分数据库返回证据与推断，
-同时避免在输出中暴露凭据。复杂调查会使用 `EXPLAIN`，或将高开销 SQL
-拆成多条有范围限制的语句逐条执行；拆分后的每条 production SQL 都需要
-单独批准。写操作不在该 skill 的执行边界内。
+它每次选择一个 profile，并执行一条有范围限制的只读 SQL。对于 production，
+它会展示准确的 profile 和 SQL，并等待用户明确批准这个未变化的组合。profile
+或 SQL 的任何变化都需要重新批准。数据库返回证据与推断会分开说明，写操作
+始终不在该 skill 的执行边界内。
 
-如需在其他仓库使用，将 `.agents/skills/db-query` 安装或链接到相应仓库的
-skills 目录，并确保 `db-query` 和 `usql` 均已安装。
+如需在其他仓库使用，将 `.agents/skills/db-query` 安装或链接到对应 skills
+目录，并确保 `db-query` 可用即可。
 
 ## 开发
 
 ```bash
-cd db-cli
 python3 -m unittest discover -s tests -v
+DB_QUERY_RUN_MYSQL_INTEGRATION=1 python3 -m unittest tests.test_mysql_integration -v
 ```
+
+集成测试只创建一次性本地 MySQL 容器，不访问 UAT 或 production。

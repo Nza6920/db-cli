@@ -2,58 +2,65 @@
 
 English | [简体中文](README.zh-CN.md)
 
-`db-cli` is a profile-aware, read-only MySQL wrapper around
-[`usql`](https://github.com/xo/usql). It provides the `db-query` command, accepts
-MySQL or JDBC MySQL URLs, and keeps passwords out of persistent configuration
-files and process arguments.
+`db-cli` provides the profile-aware, read-only `db-query` command for MySQL.
+Version 0.2.0 connects directly through pinned Python dependencies, so a normal
+pipx installation does not require a separate SQL client executable. It accepts
+MySQL and JDBC MySQL URLs and keeps passwords out of persistent configuration.
 
-## Implemented capabilities
+## Capabilities
 
-- **Multiple environments** — define named profiles for development, test,
-  staging, and production, and select one explicitly for every query.
-- **MySQL and JDBC MySQL URLs** — accept `mysql://` and `jdbc:mysql://` URLs,
-  including IPv6 hosts and percent-encoded database names.
-- **JDBC option conversion** — translate `connectTimeout`, `socketTimeout`, and
-  `useSSL` into the case-sensitive options expected by the Go MySQL driver.
-- **Environment-based credentials** — keep passwords in profile-specific
-  environment variables; reject plaintext `password` and `pass` config fields.
-- **Read-only SQL guardrails** — allow one `SELECT`, read-only `WITH`, `SHOW`,
-  `DESC`/`DESCRIBE`, or `EXPLAIN` statement while rejecting writes, multiple
-  statements, meta-commands, exports, locking reads, advisory locks, and MySQL
-  executable comments.
-- **Bounded detail queries** — require an outer literal `LIMIT` of at most 1000
-  for non-aggregate queries with a top-level `FROM`.
-- **Production confirmation** — require an exact `--confirm-profile` match for
-  production queries and production connection tests.
-- **TLS policy** — support `required`, `preferred`, and `disabled`; TLS defaults
-  to `required`, while insecure production profiles emit a scoped warning.
-- **Timeout protection** — apply configurable connection and query timeouts with
-  a 120-second configuration ceiling.
-- **Structured output** — return JSON by default, with table and CSV passthrough
-  formats for terminal use.
-- **Offline and online validation** — validate profiles without network access,
-  or explicitly test one connection with `validate --connect`.
-- **Credential-safe usql execution** — pass SQL through a temporary `0600` file,
-  use a temporary URL-encoded usql DSN, redact credentials from errors, and
-  remove temporary files after execution.
-- **Stable automation errors** — expose structured error codes and distinct exit
-  codes for configuration, credentials, connection, query, timeout, and missing
-  `usql` failures.
+- Select one named development, test, staging, or production profile per query.
+- Accept `mysql://` and `jdbc:mysql://` URLs, including IPv6 hosts and
+  percent-encoded database names.
+- Read passwords only from profile-specific environment variables and reject
+  plaintext `password` or `pass` fields.
+- Allow one `SELECT`, read-only `WITH`, `SHOW`, `DESC`/`DESCRIBE`, or `EXPLAIN`
+  statement while rejecting writes, multiple statements, client meta-commands,
+  exports, locking reads, advisory locks, and executable comments.
+- Require an outer literal `LIMIT` no greater than 1000 for non-aggregate detail
+  queries with a top-level `FROM`.
+- Require an exact `--confirm-profile` match for production queries and
+  production connection tests.
+- Open every connection with autocommit enabled, local infile disabled, and a
+  session transaction mode that is set to and verified as read-only before SQL
+  executes.
+- Support `required`, `preferred`, and `disabled` TLS modes and expose the
+  negotiated state from `validate --connect` as `tls_active`.
+- Return stable JSON by default, standard CSV, or SQL-style tables.
+- Return structured errors for configuration, credentials, connection, query,
+  socket timeout, and result encoding failures.
 
 ## Install
 
-Install `usql` first, then install this CLI from the repository root:
+Install the fixed GitHub release with pipx. PyMySQL, its RSA support, and
+tabulate are installed with the application; `usql` is not required.
 
 ```bash
-pipx install .
+pipx install "git+https://github.com/Nza6920/db-cli.git@v0.2.0"
 db-query --help
+```
+
+For a local checkout under development, use `pipx install --force .` from this
+repository root.
+
+## Compatibility and rollback
+
+| db-query | Execution and formatting dependencies | Runtime SQL client |
+| --- | --- | --- |
+| v0.1.2 | usql 0.21.4 | separately installed `usql` required |
+| v0.2.0 | PyMySQL 1.2.0, tabulate 0.10.0 | none |
+
+To roll back, install the fixed v0.1.2 tag and restore usql 0.21.4:
+
+```bash
+pipx install --force "git+https://github.com/Nza6920/db-cli.git@v0.1.2"
 ```
 
 ## Configure
 
 Copy [`config.example.toml`](config.example.toml) to
 `${XDG_CONFIG_HOME:-~/.config}/db-cli/config.toml`, edit its profiles, and
-export each profile's password in the named environment variable:
+export each password through the environment variable named by its profile:
 
 ```bash
 export DB_QUERY_PROD_PASSWORD='<password>'
@@ -63,22 +70,21 @@ db-query validate
 
 Configuration lookup order is `--config`, `DB_QUERY_CONFIG`,
 `XDG_CONFIG_HOME/db-cli/config.toml`, then `~/.config/db-cli/config.toml`.
-File ownership, symlink, and broad-permission findings are warnings. Plaintext
-`password` and `pass` fields are rejected.
+Ownership, symlink, and broad-permission findings are warnings. Plaintext
+password fields are rejected.
 
 Supported JDBC URL options are `connectTimeout`, `socketTimeout`, and `useSSL`.
 Explicit profile timeout and TLS fields take precedence, followed by JDBC URL
-options, then the 5-second connection and 30-second query defaults. Unknown
-JDBC options are rejected instead of being silently ignored.
+options, then the five-second connection and 30-second query defaults. Unknown
+JDBC options are rejected. Connection timeout maps to the driver connection
+timeout; query timeout maps to its read and write socket timeouts. A
+`QUERY_TIMEOUT` therefore means a driver/socket timeout, not a strict total
+wall-clock deadline.
 
-TLS defaults to `required`, including for production. A production profile may
-explicitly select `preferred` or `disabled`; `db-query` allows it but emits a
-warning because database traffic may be unencrypted.
-
-`db-query` writes a complete, URL-encoded DSN to a temporary `0600` usql
-configuration. This preserves the case-sensitive `readTimeout` and
-`writeTimeout` MySQL driver options. The temporary directory is removed after
-the command finishes.
+TLS defaults to `required`, which validates the system trust chain and hostname.
+`preferred` uses TLS when the server offers it and permits plaintext fallback
+only when TLS is unavailable. `disabled` prohibits TLS. A production profile
+may explicitly choose a weaker mode, but the command emits a scoped warning.
 
 ## Query
 
@@ -93,32 +99,32 @@ LIMIT 20;
 SQL
 ```
 
-The wrapper adds a terminating semicolon when one is absent because
-`usql --file` otherwise exits successfully without executing the buffered
-statement.
-
-Production queries require an exact, explicit confirmation flag after the SQL
-has been reviewed:
+Production queries require review of the exact profile and SQL followed by an
+exact confirmation:
 
 ```bash
 db-query query --profile prod --confirm-profile prod --stdin
 ```
 
-Use `--format table` or `--format csv` for human-readable passthrough output.
-JSON is the default and includes profile, environment, duration, columns,
-row count, and rows.
+JSON is the default and includes profile, environment, duration, ordered
+columns, row count, and rows. `--format csv` uses standard CSV quoting, renders
+null as `\N`, and retains an empty string as an empty field. `--format table`
+uses a SQL-style `psql` layout, renders null as `NULL`, and disables numeric
+parsing so leading-zero and precision-preserving strings stay unchanged.
 
-The safety scanner accepts one `SELECT`, read-only `WITH`, `SHOW`,
-`DESC`/`DESCRIBE`, or `EXPLAIN` statement. Detail queries require an outer,
-literal `LIMIT` no greater than 1000. It rejects writes, usql meta-commands,
-multiple statements, export clauses, locking reads, advisory locks, and MySQL
-executable comments. Constant queries without a top-level `FROM`, such as
-`SELECT 1`, do not require `LIMIT`. Use a database account whose grants are
-read-only: client validation is defense in depth, not a database authorization
-boundary.
+Across all formats, Decimal values are strings; integers and MySQL boolean
+aliases remain JSON numbers; dates use `YYYY-MM-DD`; datetimes use timezone-free
+ISO 8601; signed MySQL times retain their sign and microseconds; and binary data
+uses reversible lowercase `0x`-prefixed hexadecimal. Duplicate result column
+names fail with `RESULT_ENCODING_FAILED`; provide unique SQL aliases. There is
+no total output-byte limit, so avoid selecting large binary fields even though
+detail row counts are bounded.
 
-Warnings are scoped to the profiles used by the current command. Listing all
-profiles may therefore show warnings that a single-profile query does not.
+The safety scanner accepts one supported read-only statement. Detail reads need
+an outer literal `LIMIT` no greater than 1000; constant queries without a
+top-level `FROM`, such as `SELECT 1`, do not. Use a database account whose grants
+are read-only: static scanning and session read-only mode are defense in depth,
+not replacements for database authorization.
 
 Validate configuration offline by default, or explicitly test one connection:
 
@@ -129,30 +135,28 @@ db-query validate --profile prod --connect --confirm-profile prod
 
 ## Skill
 
-The repository provides an explicitly invoked `$db-query` skill at
+The explicitly invoked `$db-query` skill lives at
 [`.agents/skills/db-query/SKILL.md`](.agents/skills/db-query/SKILL.md):
 
 ```text
 $db-query use the prod profile to inspect the latest 20 waybills for project 252143
 ```
 
-Ordinary database discussions do not trigger it automatically. Each invocation
-selects exactly one profile and runs one bounded, read-only statement at a time.
-For production, the skill shows the exact profile and SQL and waits for explicit
-approval of that unchanged pair; every SQL or profile change requires new
-approval. Results separate returned database evidence from inference and keep
-credentials out of output. Complex investigations use `EXPLAIN` or multiple
-bounded statements instead of one expensive query; every split production
-statement is approved separately. Write execution remains outside the skill
-boundary.
+It selects one profile and executes one bounded read-only statement at a time.
+For production it shows the exact profile and SQL and waits for explicit
+approval of that unchanged pair. Every profile or SQL change requires fresh
+approval. Returned database evidence stays separate from inference, and write
+execution remains outside the skill boundary.
 
-To use it in another repository, install or link `.agents/skills/db-query` into
-that repository's skills directory and make sure both `db-query` and `usql` are
-installed.
+To use the skill elsewhere, install or link `.agents/skills/db-query` into that
+repository's skills directory and ensure only `db-query` is available.
 
 ## Develop
 
 ```bash
-cd db-cli
 python3 -m unittest discover -s tests -v
+DB_QUERY_RUN_MYSQL_INTEGRATION=1 python3 -m unittest tests.test_mysql_integration -v
 ```
+
+The integration suite creates disposable local MySQL containers and never
+accesses UAT or production.
