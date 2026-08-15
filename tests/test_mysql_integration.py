@@ -145,6 +145,7 @@ class DisposableMySqlCliTests(unittest.TestCase):
         port: int,
         *args: str,
         query_timeout_seconds: int = 30,
+        password: str = "integration-password",
     ) -> subprocess.CompletedProcess[str]:
         with tempfile.TemporaryDirectory() as temp_dir:
             config_path = Path(temp_dir) / "config.toml"
@@ -164,16 +165,17 @@ class DisposableMySqlCliTests(unittest.TestCase):
             )
             config_path.chmod(0o600)
             env = os.environ.copy()
-            env["PYTHONPATH"] = str(PROJECT_ROOT / "src")
             env["DB_QUERY_CONFIG"] = str(config_path)
-            env["DB_QUERY_INTEGRATION_PASSWORD"] = "integration-password"
+            env["DB_QUERY_INTEGRATION_PASSWORD"] = password
+            installed_cli = os.environ.get("DB_QUERY_INTEGRATION_CLI")
+            if installed_cli:
+                command = [installed_cli, *args]
+                env.pop("PYTHONPATH", None)
+            else:
+                command = [sys.executable, "-m", "db_query", *args]
+                env["PYTHONPATH"] = str(PROJECT_ROOT / "src")
             return subprocess.run(
-                [
-                    sys.executable,
-                    "-m",
-                    "db_query",
-                    *args,
-                ],
+                command,
                 cwd=PROJECT_ROOT,
                 env=env,
                 text=True,
@@ -244,3 +246,33 @@ class DisposableMySqlCliTests(unittest.TestCase):
         timeout_error = json.loads(timeout.stdout)["error"]
         self.assertEqual(timeout_error["code"], "QUERY_TIMEOUT")
         self.assertEqual(timeout_error["mysql_errno"], 2013)
+
+    def test_authentication_and_duplicate_columns_fail_safely(self):
+        authentication = self.run_cli(
+            "preferred",
+            self.tls_port,
+            "query",
+            "--profile",
+            "local",
+            "--sql",
+            "SELECT 1 AS value",
+            password="wrong-integration-password",
+        )
+        self.assertEqual(
+            authentication.returncode,
+            4,
+            authentication.stdout + authentication.stderr,
+        )
+        authentication_error = json.loads(authentication.stdout)["error"]
+        self.assertEqual(authentication_error["code"], "CONNECTION_FAILED")
+        self.assertEqual(authentication_error["mysql_errno"], 1045)
+        self.assertNotIn(
+            "wrong-integration-password",
+            authentication.stdout + authentication.stderr,
+        )
+
+        duplicate = self.run_query("SELECT 1 AS duplicated, 2 AS duplicated")
+        self.assertEqual(duplicate.returncode, 5, duplicate.stdout + duplicate.stderr)
+        duplicate_error = json.loads(duplicate.stdout)["error"]
+        self.assertEqual(duplicate_error["code"], "RESULT_ENCODING_FAILED")
+        self.assertIn("unique SQL aliases", duplicate_error["message"])
