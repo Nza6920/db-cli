@@ -6,9 +6,10 @@ import os
 import sys
 
 from db_query.config import Config, ConfigError, config_path, load_config, profile_warnings
-from db_query.mysql_runner import RunnerError as MySqlRunnerError, validate_connection
+from db_query.errors import RunnerError
+from db_query.mysql_runner import validate_connection
 from db_query.sql_safety import SqlSafetyError, validate_read_only
-from db_query.usql_runner import RunnerError, parse_json_rows, run_query
+from db_query.usql_runner import parse_json_rows, run_query
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -78,7 +79,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
             try:
                 connection_result = validate_connection(profile, password)
-            except MySqlRunnerError as exc:
+            except RunnerError as exc:
                 return _error(exc.code, str(exc), exc.exit_code, **exc.details)
             print(
                 json.dumps(
@@ -150,7 +151,7 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
             columns, rows = parse_json_rows(query_result.stdout)
         except RunnerError as exc:
-            return _error(exc.code, str(exc), exc.exit_code)
+            return _error(exc.code, str(exc), exc.exit_code, **exc.details)
         print(
             json.dumps(
                 {

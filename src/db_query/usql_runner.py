@@ -10,19 +10,13 @@ import time
 from urllib.parse import quote, urlencode
 
 from db_query.config import Profile
+from db_query.errors import RunnerError
 
 
 @dataclass(frozen=True)
 class QueryResult:
     stdout: str
     duration_ms: int
-
-
-class RunnerError(RuntimeError):
-    def __init__(self, code: str, message: str, exit_code: int):
-        super().__init__(message)
-        self.code = code
-        self.exit_code = exit_code
 
 
 def run_query(profile: Profile, password: str, sql: str, output_format: str) -> QueryResult:

@@ -7,25 +7,12 @@ from typing import Any
 from urllib.parse import quote
 
 from db_query.config import Profile
+from db_query.errors import RunnerError
 
 
 @dataclass(frozen=True)
 class ConnectionResult:
     duration_ms: int
-
-
-class RunnerError(RuntimeError):
-    def __init__(
-        self,
-        code: str,
-        message: str,
-        exit_code: int,
-        **details: object,
-    ):
-        super().__init__(message)
-        self.code = code
-        self.exit_code = exit_code
-        self.details = details
 
 
 class _ReadOnlySessionError(RuntimeError):
@@ -48,19 +35,18 @@ def validate_connection(profile: Profile, password: str) -> ConnectionResult:
         "read_timeout": profile.query_timeout_seconds,
         "write_timeout": profile.query_timeout_seconds,
     }
-    if profile.tls == "required":
-        options["ssl"] = ssl.create_default_context()
-    elif profile.tls == "disabled":
-        options["ssl_disabled"] = True
-    elif profile.tls != "preferred":
-        raise RunnerError(
-            "CONNECTION_FAILED",
-            f"unsupported TLS mode for direct MySQL validation: {profile.tls}",
-            4,
-        )
-
     started = time.monotonic()
     try:
+        if profile.tls == "required":
+            options["ssl"] = ssl.create_default_context()
+        elif profile.tls == "disabled":
+            options["ssl_disabled"] = True
+        elif profile.tls != "preferred":
+            raise RunnerError(
+                "CONNECTION_FAILED",
+                f"unsupported TLS mode for direct MySQL validation: {profile.tls}",
+                4,
+            )
         with pymysql.connect(**options) as connection:
             with connection.cursor() as cursor:
                 cursor.execute("SET SESSION TRANSACTION READ ONLY")
@@ -78,6 +64,14 @@ def validate_connection(profile: Profile, password: str) -> ConnectionResult:
         ) from exc
     except _ReadOnlySessionError as exc:
         raise RunnerError("CONNECTION_FAILED", str(exc), 4) from exc
+    except RunnerError:
+        raise
+    except (OSError, ssl.SSLError) as exc:
+        raise RunnerError(
+            "CONNECTION_FAILED",
+            _redact(str(exc) or "TLS initialization failed", profile, password),
+            4,
+        ) from exc
     return ConnectionResult(duration_ms=round((time.monotonic() - started) * 1000))
 
 

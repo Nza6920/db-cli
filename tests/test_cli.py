@@ -13,6 +13,69 @@ import unittest
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
+def fake_pymysql_module(
+    *,
+    assertions: str = "",
+    read_only_value: int = 1,
+    error_args: tuple[object, ...] | None = None,
+    sqlstate: str | None = None,
+    module_setup: str = "",
+) -> str:
+    setup = textwrap.dedent(module_setup).strip()
+    checks = textwrap.indent(textwrap.dedent(assertions).strip(), "    ")
+    failure = ""
+    if error_args is not None:
+        failure = textwrap.indent(
+            f"exc = MySQLError(*{error_args!r})\n"
+            f"exc.sqlstate = {sqlstate!r}\n"
+            "raise exc",
+            "    ",
+        )
+    connect_body = "\n".join(part for part in (failure, checks, "    return Connection()") if part)
+    return f"""
+import ssl
+
+class MySQLError(Exception):
+    sqlstate = None
+
+class Cursor:
+    def __init__(self):
+        self.statements = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        expected = [
+            "SET SESSION TRANSACTION READ ONLY",
+            "SELECT @@SESSION.transaction_read_only",
+        ]
+        if self.statements != expected:
+            raise AssertionError(self.statements)
+
+    def execute(self, sql):
+        self.statements.append(sql)
+
+    def fetchone(self):
+        return ({read_only_value},)
+
+class Connection:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return None
+
+    def cursor(self):
+        return Cursor()
+
+{setup}
+
+def connect(**kwargs):
+{connect_body}
+"""
+
+
 class DbQueryCliTests(unittest.TestCase):
     def run_cli(
         self,
@@ -357,45 +420,9 @@ class DbQueryCliTests(unittest.TestCase):
             "--confirm-profile",
             "prod",
             extra_env={"DB_QUERY_PROD_PASSWORD": "secret"},
-            fake_pymysql="""
-                import os
-                import ssl
-
-                class MySQLError(Exception):
-                    pass
-
-                class Cursor:
-                    def __init__(self):
-                        self.statements = []
-
-                    def __enter__(self):
-                        return self
-
-                    def __exit__(self, *args):
-                        expected = [
-                            "SET SESSION TRANSACTION READ ONLY",
-                            "SELECT @@SESSION.transaction_read_only",
-                        ]
-                        if self.statements != expected:
-                            raise AssertionError(self.statements)
-
-                    def execute(self, sql):
-                        self.statements.append(sql)
-
-                    def fetchone(self):
-                        return (1,)
-
-                class Connection:
-                    def __enter__(self):
-                        return self
-
-                    def __exit__(self, *args):
-                        return None
-
-                    def cursor(self):
-                        return Cursor()
-
-                def connect(**kwargs):
+            fake_pymysql=fake_pymysql_module(
+                assertions="""
+                    import os
                     expected = {
                         "host": "db.example",
                         "port": 3306,
@@ -416,8 +443,8 @@ class DbQueryCliTests(unittest.TestCase):
                         raise AssertionError(type(context))
                     if not context.check_hostname or context.verify_mode != ssl.CERT_REQUIRED:
                         raise AssertionError("TLS verification is not required")
-                    return Connection()
-            """,
+                """
+            ),
         )
 
         self.assertEqual(unconfirmed.returncode, 3)
@@ -443,34 +470,8 @@ class DbQueryCliTests(unittest.TestCase):
             "uat",
             "--connect",
             extra_env={"DB_QUERY_UAT_PASSWORD": "secret"},
-            fake_pymysql="""
-                class MySQLError(Exception):
-                    pass
-
-                class Cursor:
-                    def __enter__(self):
-                        return self
-
-                    def __exit__(self, *args):
-                        return None
-
-                    def execute(self, sql):
-                        return None
-
-                    def fetchone(self):
-                        return (1,)
-
-                class Connection:
-                    def __enter__(self):
-                        return self
-
-                    def __exit__(self, *args):
-                        return None
-
-                    def cursor(self):
-                        return Cursor()
-
-                def connect(**kwargs):
+            fake_pymysql=fake_pymysql_module(
+                assertions="""
                     if "ssl" in kwargs or "ssl_disabled" in kwargs:
                         raise AssertionError(kwargs)
                     expected = {
@@ -484,12 +485,43 @@ class DbQueryCliTests(unittest.TestCase):
                     actual = {key: kwargs[key] for key in expected}
                     if actual != expected:
                         raise AssertionError(actual)
-                    return Connection()
-            """,
+                """
+            ),
         )
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(json.loads(result.stdout)["connected"], True)
+
+    def test_validate_connect_reports_tls_initialization_failure_as_json(self):
+        result = self.run_cli(
+            """
+            [profiles.test]
+            url = "mysql://db.example/"
+            username = "readonly"
+            password_env = "DB_QUERY_TEST_PASSWORD"
+            environment = "test"
+            tls = "required"
+            """,
+            "validate",
+            "--profile",
+            "test",
+            "--connect",
+            extra_env={"DB_QUERY_TEST_PASSWORD": "secret-password"},
+            fake_pymysql=fake_pymysql_module(
+                module_setup="""
+                    def fail_default_context():
+                        raise ssl.SSLError("certificate setup failed for secret-password")
+
+                    ssl.create_default_context = fail_default_context
+                """
+            ),
+        )
+
+        self.assertEqual(result.returncode, 4)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["error"]["code"], "CONNECTION_FAILED")
+        self.assertNotIn("secret-password", result.stdout + result.stderr)
+        self.assertNotIn("Traceback", result.stdout + result.stderr)
 
     def test_validate_connect_explicitly_disables_tls(self):
         result = self.run_cli(
@@ -506,38 +538,12 @@ class DbQueryCliTests(unittest.TestCase):
             "test",
             "--connect",
             extra_env={"DB_QUERY_TEST_PASSWORD": "secret"},
-            fake_pymysql="""
-                class MySQLError(Exception):
-                    pass
-
-                class Cursor:
-                    def __enter__(self):
-                        return self
-
-                    def __exit__(self, *args):
-                        return None
-
-                    def execute(self, sql):
-                        return None
-
-                    def fetchone(self):
-                        return (1,)
-
-                class Connection:
-                    def __enter__(self):
-                        return self
-
-                    def __exit__(self, *args):
-                        return None
-
-                    def cursor(self):
-                        return Cursor()
-
-                def connect(**kwargs):
+            fake_pymysql=fake_pymysql_module(
+                assertions="""
                     if kwargs.get("ssl_disabled") is not True or "ssl" in kwargs:
                         raise AssertionError(kwargs)
-                    return Connection()
-            """,
+                """
+            ),
         )
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -557,18 +563,13 @@ class DbQueryCliTests(unittest.TestCase):
             "test",
             "--connect",
             extra_env={"DB_QUERY_TEST_PASSWORD": "secret-password"},
-            fake_pymysql="""
-                class MySQLError(Exception):
-                    def __init__(self, *args):
-                        super().__init__(*args)
-                        self.sqlstate = "28000"
-
-                def connect(**kwargs):
-                    raise MySQLError(
-                        1045,
-                        "Access denied for readonly-user using secret-password at mysql://db.example/",
-                    )
-            """,
+            fake_pymysql=fake_pymysql_module(
+                error_args=(
+                    1045,
+                    "Access denied for readonly-user using secret-password at mysql://db.example/",
+                ),
+                sqlstate="28000",
+            ),
         )
 
         self.assertEqual(result.returncode, 4)
@@ -595,36 +596,7 @@ class DbQueryCliTests(unittest.TestCase):
             "test",
             "--connect",
             extra_env={"DB_QUERY_TEST_PASSWORD": "secret"},
-            fake_pymysql="""
-                class MySQLError(Exception):
-                    pass
-
-                class Cursor:
-                    def __enter__(self):
-                        return self
-
-                    def __exit__(self, *args):
-                        return None
-
-                    def execute(self, sql):
-                        return None
-
-                    def fetchone(self):
-                        return (0,)
-
-                class Connection:
-                    def __enter__(self):
-                        return self
-
-                    def __exit__(self, *args):
-                        return None
-
-                    def cursor(self):
-                        return Cursor()
-
-                def connect(**kwargs):
-                    return Connection()
-            """,
+            fake_pymysql=fake_pymysql_module(read_only_value=0),
         )
 
         self.assertEqual(result.returncode, 4)
