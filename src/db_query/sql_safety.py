@@ -50,7 +50,7 @@ AGGREGATES = {"COUNT", "SUM", "AVG", "MIN", "MAX"}
 
 def validate_read_only(sql: str, max_rows: int = 1000) -> None:
     if sql.lstrip().startswith("\\"):
-        raise SqlSafetyError("SQL_META_COMMAND", "usql meta-commands are not allowed")
+        raise SqlSafetyError("SQL_META_COMMAND", "SQL client meta-commands are not allowed")
     tokens = _tokens(sql)
     if not tokens:
         raise SqlSafetyError("SQL_EMPTY", "SQL is empty")

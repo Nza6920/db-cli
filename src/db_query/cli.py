@@ -7,9 +7,9 @@ import sys
 
 from db_query.config import Config, ConfigError, config_path, load_config, profile_warnings
 from db_query.errors import RunnerError
-from db_query.mysql_runner import run_json_query, validate_connection
+from db_query.mysql_runner import run_query, validate_connection
+from db_query.output_formatting import render_csv, render_table
 from db_query.sql_safety import SqlSafetyError, validate_read_only
-from db_query.usql_runner import run_query
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -146,14 +146,15 @@ def main(argv: list[str] | None = None) -> int:
                 3,
             )
         try:
-            if args.format == "json":
-                json_result = run_json_query(profile, password, sql)
-                columns = json_result.columns
-                rows = json_result.rows
-                duration_ms = json_result.duration_ms
-            else:
-                formatted_result = run_query(profile, password, sql, args.format)
-                print(formatted_result.stdout, end="")
+            query_result = run_query(profile, password, sql)
+            columns = query_result.columns
+            rows = query_result.rows
+            duration_ms = query_result.duration_ms
+            if args.format == "csv":
+                print(render_csv(columns, rows), end="")
+                return 0
+            if args.format == "table":
+                print(render_table(columns, rows), end="")
                 return 0
         except RunnerError as exc:
             return _error(exc.code, str(exc), exc.exit_code, **exc.details)

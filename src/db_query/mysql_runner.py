@@ -64,7 +64,7 @@ def validate_connection(profile: Profile, password: str) -> ConnectionResult:
     )
 
 
-def run_json_query(profile: Profile, password: str, sql: str) -> QueryResult:
+def run_query(profile: Profile, password: str, sql: str) -> QueryResult:
     import pymysql
 
     started = time.monotonic()

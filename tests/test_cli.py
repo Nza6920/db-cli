@@ -157,7 +157,6 @@ class DbQueryCliTests(unittest.TestCase):
         *args: str,
         extra_env: dict[str, str] | None = None,
         fake_pymysql: str | None = None,
-        fake_usql: str | None = None,
         stdin: str | None = None,
     ):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -177,13 +176,6 @@ class DbQueryCliTests(unittest.TestCase):
                     encoding="utf-8",
                 )
                 env["PYTHONPATH"] = f"{temp_dir}{os.pathsep}{env['PYTHONPATH']}"
-            if fake_usql is not None:
-                bin_dir = Path(temp_dir) / "bin"
-                bin_dir.mkdir()
-                usql_path = bin_dir / "usql"
-                usql_path.write_text(textwrap.dedent(fake_usql).lstrip(), encoding="utf-8")
-                usql_path.chmod(0o700)
-                env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
             return subprocess.run(
                 [sys.executable, "-m", "db_query", *args],
                 cwd=PROJECT_ROOT,
@@ -956,7 +948,7 @@ class DbQueryCliTests(unittest.TestCase):
         self.assertEqual(result.returncode, 4)
         self.assertEqual(json.loads(result.stdout)["error"]["code"], "CONNECTION_FAILED")
 
-    def test_json_query_does_not_require_usql_on_path(self):
+    def test_query_does_not_require_usql_on_path(self):
         result = self.run_cli(
             """
             [profiles.test]
@@ -992,7 +984,10 @@ class DbQueryCliTests(unittest.TestCase):
             "test",
             "--sql",
             "SELECT * FROM app.users LIMIT 1",
-            extra_env={"DB_QUERY_TEST_PASSWORD": "secret"},
+            extra_env={
+                "DB_QUERY_TEST_PASSWORD": "secret",
+                "PATH": "/path/that/does/not/exist",
+            },
             fake_pymysql=fake_pymysql_query_module(
                 error_args=(2013, "Lost connection during query (timed out)"),
                 sqlstate="HY000",
@@ -1005,7 +1000,7 @@ class DbQueryCliTests(unittest.TestCase):
         self.assertEqual(payload["error"]["mysql_errno"], 2013)
         self.assertEqual(payload["error"]["sqlstate"], "HY000")
 
-    def test_csv_format_is_passed_through(self):
+    def test_csv_format_quotes_values_and_distinguishes_null_from_empty(self):
         result = self.run_cli(
             """
             [profiles.test]
@@ -1021,19 +1016,83 @@ class DbQueryCliTests(unittest.TestCase):
             "csv",
             "--sql",
             "SELECT * FROM app.users LIMIT 1",
-            extra_env={"DB_QUERY_TEST_PASSWORD": "secret"},
-            fake_usql="""
-                #!/usr/bin/env python3
-                import sys
-                if "--csv" not in sys.argv:
-                    raise SystemExit(9)
-                print("id,name")
-                print("1,alice")
-            """,
+            extra_env={
+                "DB_QUERY_TEST_PASSWORD": "secret",
+                "PATH": "/path/that/does/not/exist",
+            },
+            fake_pymysql=fake_pymysql_query_module(
+                columns=(
+                    "text_value",
+                    "empty_value",
+                    "null_value",
+                    "code",
+                    "decimal_value",
+                    "binary_value",
+                ),
+                rows_expression="""[(
+                    'comma, quote " and\\nnewline',
+                    "",
+                    None,
+                    "00123",
+                    Decimal("123456789012.123456789012345678"),
+                    b"\\x00\\xa5\\xff",
+                )]""",
+            ),
         )
 
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout, "id,name\n1,alice\n")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(
+            result.stdout,
+            'text_value,empty_value,null_value,code,decimal_value,binary_value\n'
+            '"comma, quote "" and\nnewline",,\\N,00123,'
+            "123456789012.123456789012345678,0x00a5ff\n",
+        )
+
+    def test_table_format_uses_psql_layout_without_numeric_rewriting(self):
+        result = self.run_cli(
+            """
+            [profiles.test]
+            url = "jdbc:mysql://db.example/"
+            username = "readonly"
+            password_env = "DB_QUERY_TEST_PASSWORD"
+            environment = "test"
+            """,
+            "query",
+            "--profile",
+            "test",
+            "--format",
+            "table",
+            "--sql",
+            "SELECT * FROM app.users LIMIT 1",
+            extra_env={
+                "DB_QUERY_TEST_PASSWORD": "secret",
+                "PATH": "/path/that/does/not/exist",
+            },
+            fake_pymysql=fake_pymysql_query_module(
+                columns=(
+                    "code",
+                    "decimal_value",
+                    "null_value",
+                    "empty_value",
+                    "binary_value",
+                ),
+                rows_expression="""[(
+                    "00123",
+                    Decimal("123456789012.123456789012345678"),
+                    None,
+                    "",
+                    b"\\x00\\xa5\\xff",
+                )]""",
+            ),
+        )
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(result.stdout.startswith("+"), result.stdout)
+        self.assertIn("| code", result.stdout)
+        self.assertIn("| 00123", result.stdout)
+        self.assertIn("123456789012.123456789012345678", result.stdout)
+        self.assertIn("NULL", result.stdout)
+        self.assertIn("0x00a5ff", result.stdout)
 
 
 if __name__ == "__main__":

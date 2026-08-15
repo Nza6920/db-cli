@@ -1,3 +1,3 @@
-"""Profile-aware read-only database queries through usql."""
+"""Profile-aware read-only MySQL queries."""
 
 __version__ = "0.1.2"
