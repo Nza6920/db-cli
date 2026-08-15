@@ -4,9 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "db-query"
-version = "0.1.2"
+version = "0.2.0"
 description = "A profile-aware, read-only MySQL query wrapper for usql"
 requires-python = ">=3.11"
+dependencies = ["PyMySQL[rsa]==1.2.0"]
 
 [project.scripts]
 db-query = "db_query.cli:main"

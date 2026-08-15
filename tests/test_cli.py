@@ -19,6 +19,7 @@ class DbQueryCliTests(unittest.TestCase):
         config: str,
         *args: str,
         extra_env: dict[str, str] | None = None,
+        fake_pymysql: str | None = None,
         fake_usql: str | None = None,
         stdin: str | None = None,
     ):
@@ -31,6 +32,14 @@ class DbQueryCliTests(unittest.TestCase):
             env["DB_QUERY_CONFIG"] = str(config_path)
             if extra_env:
                 env.update(extra_env)
+            if fake_pymysql is not None:
+                pymysql_dir = Path(temp_dir) / "pymysql"
+                pymysql_dir.mkdir()
+                (pymysql_dir / "__init__.py").write_text(
+                    textwrap.dedent(fake_pymysql).lstrip(),
+                    encoding="utf-8",
+                )
+                env["PYTHONPATH"] = f"{temp_dir}{os.pathsep}{env['PYTHONPATH']}"
             if fake_usql is not None:
                 bin_dir = Path(temp_dir) / "bin"
                 bin_dir.mkdir()
@@ -348,15 +357,66 @@ class DbQueryCliTests(unittest.TestCase):
             "--confirm-profile",
             "prod",
             extra_env={"DB_QUERY_PROD_PASSWORD": "secret"},
-            fake_usql="""
-                #!/usr/bin/env python3
-                from pathlib import Path
-                import sys
+            fake_pymysql="""
+                import os
+                import ssl
 
-                sql_path = Path(sys.argv[sys.argv.index("--file") + 1])
-                if sql_path.read_text() != "SELECT 1 AS connection;\\n":
-                    raise SystemExit(95)
-                print('[{"connection":1}]')
+                class MySQLError(Exception):
+                    pass
+
+                class Cursor:
+                    def __init__(self):
+                        self.statements = []
+
+                    def __enter__(self):
+                        return self
+
+                    def __exit__(self, *args):
+                        expected = [
+                            "SET SESSION TRANSACTION READ ONLY",
+                            "SELECT @@SESSION.transaction_read_only",
+                        ]
+                        if self.statements != expected:
+                            raise AssertionError(self.statements)
+
+                    def execute(self, sql):
+                        self.statements.append(sql)
+
+                    def fetchone(self):
+                        return (1,)
+
+                class Connection:
+                    def __enter__(self):
+                        return self
+
+                    def __exit__(self, *args):
+                        return None
+
+                    def cursor(self):
+                        return Cursor()
+
+                def connect(**kwargs):
+                    expected = {
+                        "host": "db.example",
+                        "port": 3306,
+                        "user": "readonly",
+                        "password": os.environ["DB_QUERY_PROD_PASSWORD"],
+                        "database": None,
+                        "charset": "utf8mb4",
+                        "autocommit": True,
+                        "local_infile": False,
+                        "connect_timeout": 5,
+                        "read_timeout": 30,
+                        "write_timeout": 30,
+                    }
+                    context = kwargs.pop("ssl")
+                    if kwargs != expected:
+                        raise AssertionError(kwargs)
+                    if not isinstance(context, ssl.SSLContext):
+                        raise AssertionError(type(context))
+                    if not context.check_hostname or context.verify_mode != ssl.CERT_REQUIRED:
+                        raise AssertionError("TLS verification is not required")
+                    return Connection()
             """,
         )
 
@@ -367,6 +427,210 @@ class DbQueryCliTests(unittest.TestCase):
         )
         self.assertEqual(confirmed.returncode, 0, confirmed.stderr)
         self.assertEqual(json.loads(confirmed.stdout)["connected"], True)
+
+    def test_validate_connect_uses_preferred_tls_and_jdbc_timeouts(self):
+        result = self.run_cli(
+            """
+            [profiles.uat]
+            url = "jdbc:mysql://db.example:3307/reporting?connectTimeout=9000&socketTimeout=12000"
+            username = "readonly"
+            password_env = "DB_QUERY_UAT_PASSWORD"
+            environment = "staging"
+            tls = "preferred"
+            """,
+            "validate",
+            "--profile",
+            "uat",
+            "--connect",
+            extra_env={"DB_QUERY_UAT_PASSWORD": "secret"},
+            fake_pymysql="""
+                class MySQLError(Exception):
+                    pass
+
+                class Cursor:
+                    def __enter__(self):
+                        return self
+
+                    def __exit__(self, *args):
+                        return None
+
+                    def execute(self, sql):
+                        return None
+
+                    def fetchone(self):
+                        return (1,)
+
+                class Connection:
+                    def __enter__(self):
+                        return self
+
+                    def __exit__(self, *args):
+                        return None
+
+                    def cursor(self):
+                        return Cursor()
+
+                def connect(**kwargs):
+                    if "ssl" in kwargs or "ssl_disabled" in kwargs:
+                        raise AssertionError(kwargs)
+                    expected = {
+                        "host": "db.example",
+                        "port": 3307,
+                        "database": "reporting",
+                        "connect_timeout": 9,
+                        "read_timeout": 12,
+                        "write_timeout": 12,
+                    }
+                    actual = {key: kwargs[key] for key in expected}
+                    if actual != expected:
+                        raise AssertionError(actual)
+                    return Connection()
+            """,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(json.loads(result.stdout)["connected"], True)
+
+    def test_validate_connect_explicitly_disables_tls(self):
+        result = self.run_cli(
+            """
+            [profiles.test]
+            url = "mysql://db.example/"
+            username = "readonly"
+            password_env = "DB_QUERY_TEST_PASSWORD"
+            environment = "test"
+            tls = "disabled"
+            """,
+            "validate",
+            "--profile",
+            "test",
+            "--connect",
+            extra_env={"DB_QUERY_TEST_PASSWORD": "secret"},
+            fake_pymysql="""
+                class MySQLError(Exception):
+                    pass
+
+                class Cursor:
+                    def __enter__(self):
+                        return self
+
+                    def __exit__(self, *args):
+                        return None
+
+                    def execute(self, sql):
+                        return None
+
+                    def fetchone(self):
+                        return (1,)
+
+                class Connection:
+                    def __enter__(self):
+                        return self
+
+                    def __exit__(self, *args):
+                        return None
+
+                    def cursor(self):
+                        return Cursor()
+
+                def connect(**kwargs):
+                    if kwargs.get("ssl_disabled") is not True or "ssl" in kwargs:
+                        raise AssertionError(kwargs)
+                    return Connection()
+            """,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_validate_connect_reports_redacted_mysql_error_details(self):
+        result = self.run_cli(
+            """
+            [profiles.test]
+            url = "mysql://db.example/"
+            username = "readonly-user"
+            password_env = "DB_QUERY_TEST_PASSWORD"
+            environment = "test"
+            tls = "preferred"
+            """,
+            "validate",
+            "--profile",
+            "test",
+            "--connect",
+            extra_env={"DB_QUERY_TEST_PASSWORD": "secret-password"},
+            fake_pymysql="""
+                class MySQLError(Exception):
+                    def __init__(self, *args):
+                        super().__init__(*args)
+                        self.sqlstate = "28000"
+
+                def connect(**kwargs):
+                    raise MySQLError(
+                        1045,
+                        "Access denied for readonly-user using secret-password at mysql://db.example/",
+                    )
+            """,
+        )
+
+        self.assertEqual(result.returncode, 4)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["error"]["code"], "CONNECTION_FAILED")
+        self.assertEqual(payload["error"]["mysql_errno"], 1045)
+        self.assertEqual(payload["error"]["sqlstate"], "28000")
+        self.assertNotIn("readonly-user", result.stdout + result.stderr)
+        self.assertNotIn("secret-password", result.stdout + result.stderr)
+        self.assertNotIn("mysql://db.example/", result.stdout + result.stderr)
+
+    def test_validate_connect_fails_when_session_is_not_read_only(self):
+        result = self.run_cli(
+            """
+            [profiles.test]
+            url = "mysql://db.example/"
+            username = "readonly"
+            password_env = "DB_QUERY_TEST_PASSWORD"
+            environment = "test"
+            tls = "preferred"
+            """,
+            "validate",
+            "--profile",
+            "test",
+            "--connect",
+            extra_env={"DB_QUERY_TEST_PASSWORD": "secret"},
+            fake_pymysql="""
+                class MySQLError(Exception):
+                    pass
+
+                class Cursor:
+                    def __enter__(self):
+                        return self
+
+                    def __exit__(self, *args):
+                        return None
+
+                    def execute(self, sql):
+                        return None
+
+                    def fetchone(self):
+                        return (0,)
+
+                class Connection:
+                    def __enter__(self):
+                        return self
+
+                    def __exit__(self, *args):
+                        return None
+
+                    def cursor(self):
+                        return Cursor()
+
+                def connect(**kwargs):
+                    return Connection()
+            """,
+        )
+
+        self.assertEqual(result.returncode, 4)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["error"]["code"], "CONNECTION_FAILED")
+        self.assertIn("read-only", payload["error"]["message"])
 
     def test_supported_read_only_statements_reach_usql(self):
         config = """
