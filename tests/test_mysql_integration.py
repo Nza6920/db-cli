@@ -116,6 +116,36 @@ class DisposableMySqlCliTests(unittest.TestCase):
             )
 
     def run_validate(self, tls: str, port: int) -> subprocess.CompletedProcess[str]:
+        return self.run_cli(
+            tls,
+            port,
+            "validate",
+            "--profile",
+            "local",
+            "--connect",
+        )
+
+    def run_query(
+        self, sql: str, *, query_timeout_seconds: int = 30
+    ) -> subprocess.CompletedProcess[str]:
+        return self.run_cli(
+            "preferred",
+            self.tls_port,
+            "query",
+            "--profile",
+            "local",
+            "--sql",
+            sql,
+            query_timeout_seconds=query_timeout_seconds,
+        )
+
+    def run_cli(
+        self,
+        tls: str,
+        port: int,
+        *args: str,
+        query_timeout_seconds: int = 30,
+    ) -> subprocess.CompletedProcess[str]:
         with tempfile.TemporaryDirectory() as temp_dir:
             config_path = Path(temp_dir) / "config.toml"
             config_path.write_text(
@@ -127,6 +157,7 @@ class DisposableMySqlCliTests(unittest.TestCase):
                         'password_env = "DB_QUERY_INTEGRATION_PASSWORD"',
                         'environment = "test"',
                         f'tls = "{tls}"',
+                        f"query_timeout_seconds = {query_timeout_seconds}",
                     ]
                 ),
                 encoding="utf-8",
@@ -141,10 +172,7 @@ class DisposableMySqlCliTests(unittest.TestCase):
                     sys.executable,
                     "-m",
                     "db_query",
-                    "validate",
-                    "--profile",
-                    "local",
-                    "--connect",
+                    *args,
                 ],
                 cwd=PROJECT_ROOT,
                 env=env,
@@ -176,3 +204,43 @@ class DisposableMySqlCliTests(unittest.TestCase):
         self.assertEqual(required.returncode, 4, required.stdout + required.stderr)
         self.assertEqual(json.loads(required.stdout)["error"]["code"], "CONNECTION_FAILED")
         self.assertNotIn("integration-password", required.stdout + required.stderr)
+
+    def test_json_query_types_read_only_session_and_socket_timeout(self):
+        sql = """
+            SELECT
+                7 AS integer_value,
+                TRUE AS boolean_alias,
+                CAST('123456789012.123456789012345678' AS DECIMAL(30,18)) AS decimal_value,
+                NULL AS null_value,
+                '' AS empty_value,
+                CAST('2026-08-15' AS DATE) AS date_value,
+                CAST('2026-08-15 09:10:11.123456' AS DATETIME(6)) AS datetime_value,
+                CAST('-01:02:03.000004' AS TIME(6)) AS negative_time,
+                X'00A5FF' AS binary_value,
+                @@SESSION.transaction_read_only AS session_read_only
+        """
+        result = self.run_query(sql)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["row_count"], 1)
+        self.assertEqual(
+            payload["rows"][0],
+            {
+                "integer_value": 7,
+                "boolean_alias": 1,
+                "decimal_value": "123456789012.123456789012345678",
+                "null_value": None,
+                "empty_value": "",
+                "date_value": "2026-08-15",
+                "datetime_value": "2026-08-15T09:10:11.123456",
+                "negative_time": "-01:02:03.000004",
+                "binary_value": "0x00a5ff",
+                "session_read_only": 1,
+            },
+        )
+
+        timeout = self.run_query("SELECT SLEEP(2) AS slept", query_timeout_seconds=1)
+        self.assertEqual(timeout.returncode, 5, timeout.stdout + timeout.stderr)
+        timeout_error = json.loads(timeout.stdout)["error"]
+        self.assertEqual(timeout_error["code"], "QUERY_TIMEOUT")
+        self.assertEqual(timeout_error["mysql_errno"], 2013)

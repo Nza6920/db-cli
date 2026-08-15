@@ -7,9 +7,9 @@ import sys
 
 from db_query.config import Config, ConfigError, config_path, load_config, profile_warnings
 from db_query.errors import RunnerError
-from db_query.mysql_runner import validate_connection
+from db_query.mysql_runner import run_json_query, validate_connection
 from db_query.sql_safety import SqlSafetyError, validate_read_only
-from db_query.usql_runner import parse_json_rows, run_query
+from db_query.usql_runner import run_query
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -146,11 +146,15 @@ def main(argv: list[str] | None = None) -> int:
                 3,
             )
         try:
-            query_result = run_query(profile, password, sql, args.format)
-            if args.format != "json":
-                print(query_result.stdout, end="")
+            if args.format == "json":
+                json_result = run_json_query(profile, password, sql)
+                columns = json_result.columns
+                rows = json_result.rows
+                duration_ms = json_result.duration_ms
+            else:
+                formatted_result = run_query(profile, password, sql, args.format)
+                print(formatted_result.stdout, end="")
                 return 0
-            columns, rows = parse_json_rows(query_result.stdout)
         except RunnerError as exc:
             return _error(exc.code, str(exc), exc.exit_code, **exc.details)
         print(
@@ -159,7 +163,7 @@ def main(argv: list[str] | None = None) -> int:
                     "ok": True,
                     "profile": profile.name,
                     "environment": profile.environment,
-                    "duration_ms": query_result.duration_ms,
+                    "duration_ms": duration_ms,
                     "row_count": len(rows),
                     "columns": columns,
                     "rows": rows,

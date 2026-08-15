@@ -81,6 +81,75 @@ def connect(**kwargs):
 """
 
 
+def fake_pymysql_query_module(
+    *,
+    columns: tuple[str, ...] = ("id",),
+    rows_expression: str = "[(1,)]",
+    assertions: str = "",
+    expected_sql: str | None = None,
+    error_args: tuple[object, ...] | None = None,
+    sqlstate: str | None = None,
+) -> str:
+    checks = textwrap.indent(textwrap.dedent(assertions).strip(), "    ")
+    failure = ""
+    if error_args is not None:
+        failure = textwrap.indent(
+            f"exc = MySQLError(*{error_args!r})\n"
+            f"exc.sqlstate = {sqlstate!r}\n"
+            "raise exc",
+            "            ",
+        )
+    return f"""
+import datetime
+from decimal import Decimal
+
+class MySQLError(Exception):
+    sqlstate = None
+
+class Cursor:
+    def __init__(self):
+        self.statements = []
+        self.description = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return None
+
+    def execute(self, sql):
+        self.statements.append(sql)
+        if sql not in (
+            "SET SESSION TRANSACTION READ ONLY",
+            "SELECT @@SESSION.transaction_read_only",
+        ):
+            if sql != {expected_sql!r} and {expected_sql is not None!r}:
+                raise AssertionError(sql)
+{failure or '            pass'}
+            self.description = [(name, None, None, None, None, None, None) for name in {columns!r}]
+
+    def fetchone(self):
+        return (1,)
+
+    def fetchall(self):
+        return {rows_expression}
+
+class Connection:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return None
+
+    def cursor(self):
+        return Cursor()
+
+def connect(**kwargs):
+{checks or '    pass'}
+    return Connection()
+"""
+
+
 class DbQueryCliTests(unittest.TestCase):
     def run_cli(
         self,
@@ -255,7 +324,152 @@ class DbQueryCliTests(unittest.TestCase):
         self.assertEqual(result.returncode, 3)
         self.assertEqual(json.loads(result.stdout)["error"]["code"], "PRODUCTION_CONFIRMATION_REQUIRED")
 
-    def test_query_runs_usql_without_putting_password_or_sql_in_argv(self):
+    def test_json_query_normalizes_representative_mysql_values(self):
+        result = self.run_cli(
+            """
+            [profiles.test]
+            url = "mysql://db.example/reporting"
+            username = "readonly"
+            password_env = "DB_QUERY_TEST_PASSWORD"
+            environment = "test"
+            tls = "preferred"
+            """,
+            "query",
+            "--profile",
+            "test",
+            "--sql",
+            "SELECT 1 AS id",
+            extra_env={"DB_QUERY_TEST_PASSWORD": "secret"},
+            fake_pymysql=fake_pymysql_query_module(
+                columns=(
+                    "integer_value",
+                    "boolean_alias",
+                    "decimal_value",
+                    "null_value",
+                    "empty_value",
+                    "date_value",
+                    "datetime_value",
+                    "positive_time",
+                    "negative_time",
+                    "binary_value",
+                ),
+                rows_expression="""[(
+                    7,
+                    1,
+                    Decimal("123456789012.123456789012345678"),
+                    None,
+                    "",
+                    datetime.date(2026, 8, 15),
+                    datetime.datetime(2026, 8, 15, 9, 10, 11, 123456),
+                    datetime.timedelta(hours=12, minutes=34, seconds=56, microseconds=123456),
+                    -datetime.timedelta(hours=1, minutes=2, seconds=3, microseconds=4),
+                    b"\\x00\\xa5\\xff",
+                )]""",
+            ),
+        )
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["profile"], "test")
+        self.assertEqual(payload["environment"], "test")
+        self.assertEqual(payload["row_count"], 1)
+        self.assertEqual(
+            payload["rows"][0],
+            {
+                "integer_value": 7,
+                "boolean_alias": 1,
+                "decimal_value": "123456789012.123456789012345678",
+                "null_value": None,
+                "empty_value": "",
+                "date_value": "2026-08-15",
+                "datetime_value": "2026-08-15T09:10:11.123456",
+                "positive_time": "12:34:56.123456",
+                "negative_time": "-01:02:03.000004",
+                "binary_value": "0x00a5ff",
+            },
+        )
+
+    def test_json_query_rejects_duplicate_column_names(self):
+        result = self.run_cli(
+            """
+            [profiles.test]
+            url = "mysql://db.example/reporting"
+            username = "readonly"
+            password_env = "DB_QUERY_TEST_PASSWORD"
+            environment = "test"
+            """,
+            "query",
+            "--profile",
+            "test",
+            "--sql",
+            "SELECT 1 AS duplicated, 2 AS duplicated",
+            extra_env={"DB_QUERY_TEST_PASSWORD": "secret"},
+            fake_pymysql=fake_pymysql_query_module(
+                columns=("duplicated", "duplicated"),
+                rows_expression="[(1, 2)]",
+            ),
+        )
+
+        self.assertEqual(result.returncode, 5)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["error"]["code"], "RESULT_ENCODING_FAILED")
+        self.assertIn("unique SQL aliases", payload["error"]["message"])
+
+    def test_json_query_reports_execution_and_encoding_failures_without_sql(self):
+        config = """
+            [profiles.test]
+            url = "mysql://db.example/reporting"
+            username = "readonly-user"
+            password_env = "DB_QUERY_TEST_PASSWORD"
+            environment = "test"
+        """
+        sql = "SELECT * FROM secrets WHERE token = 'original-sql-secret' LIMIT 1"
+        query_failure = self.run_cli(
+            config,
+            "query",
+            "--profile",
+            "test",
+            "--sql",
+            sql,
+            extra_env={"DB_QUERY_TEST_PASSWORD": "secret-password"},
+            fake_pymysql=fake_pymysql_query_module(
+                error_args=(1064, f"syntax error near {sql} for secret-password"),
+                sqlstate="42000",
+            ),
+        )
+        encoding_failure = self.run_cli(
+            config,
+            "query",
+            "--profile",
+            "test",
+            "--sql",
+            sql,
+            extra_env={"DB_QUERY_TEST_PASSWORD": "secret-password"},
+            fake_pymysql=fake_pymysql_query_module(rows_expression="[(object(),)]"),
+        )
+
+        self.assertEqual(query_failure.returncode, 5)
+        query_error = json.loads(query_failure.stdout)["error"]
+        self.assertEqual(query_error["code"], "QUERY_FAILED")
+        self.assertEqual(query_error["mysql_errno"], 1064)
+        self.assertEqual(query_error["sqlstate"], "42000")
+        self.assertEqual(encoding_failure.returncode, 5)
+        self.assertEqual(
+            json.loads(encoding_failure.stdout)["error"]["code"],
+            "RESULT_ENCODING_FAILED",
+        )
+        combined = (
+            query_failure.stdout
+            + query_failure.stderr
+            + encoding_failure.stdout
+            + encoding_failure.stderr
+        )
+        self.assertNotIn(sql, combined)
+        self.assertNotIn("secret-password", combined)
+        self.assertNotIn("readonly-user", combined)
+        self.assertNotIn("mysql://db.example/reporting", combined)
+
+    def test_json_query_uses_driver_without_leaking_password_or_sql(self):
         password = "s3cret:@ value"
         sql = "SELECT id, name FROM app.users LIMIT 2"
         result = self.run_cli(
@@ -275,37 +489,32 @@ class DbQueryCliTests(unittest.TestCase):
             "--stdin",
             extra_env={"DB_QUERY_TEST_PASSWORD": password},
             stdin=sql,
-            fake_usql="""
-                #!/usr/bin/env python3
-                import os
-                from pathlib import Path
-                import sys
-
-                argv = "\\0".join(sys.argv)
-                secret = os.environ["DB_QUERY_TEST_PASSWORD"]
-                if secret in argv or "SELECT id" in argv:
-                    print("secret or SQL leaked into argv", file=sys.stderr)
-                    raise SystemExit(91)
-                config_path = Path(sys.argv[sys.argv.index("--config") + 1])
-                config = config_path.read_text()
-                sql_path = Path(sys.argv[sys.argv.index("--file") + 1])
-                expected = (
-                    'connections:\\n'
-                    '  db_query: "mysql://readonly:'
-                    's3cret%3A%40%20value@db.example:3307/'
-                    '?timeout=5s&readTimeout=30s&writeTimeout=30s&tls=true"\\n'
-                )
-                if (
-                    config_path.stat().st_mode & 0o777 != 0o600
-                    or config != expected
-                    or "writetimeout" in config
-                    or "readtimeout" in config
-                    or sql_path.read_text() != "SELECT id, name FROM app.users LIMIT 2;\\n"
-                ):
-                    print("bad generated config", file=sys.stderr)
-                    raise SystemExit(92)
-                print('[{"id":1,"name":"alice"},{"id":2,"name":"bob"}]')
-            """,
+            fake_pymysql=fake_pymysql_query_module(
+                columns=("id", "name"),
+                rows_expression='[(1, "alice"), (2, "bob")]',
+                expected_sql=sql,
+                assertions="""
+                    import os
+                    expected = {
+                        "host": "db.example",
+                        "port": 3307,
+                        "user": "readonly",
+                        "password": os.environ["DB_QUERY_TEST_PASSWORD"],
+                        "database": None,
+                        "charset": "utf8mb4",
+                        "autocommit": True,
+                        "local_infile": False,
+                        "connect_timeout": 5,
+                        "read_timeout": 30,
+                        "write_timeout": 30,
+                    }
+                    context = kwargs.pop("ssl")
+                    if kwargs != expected:
+                        raise AssertionError(kwargs)
+                    if not context.check_hostname or context.verify_mode != 2:
+                        raise AssertionError("TLS certificate verification is not required")
+                """,
+            ),
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -351,24 +560,24 @@ class DbQueryCliTests(unittest.TestCase):
             "--sql",
             "SELECT * FROM app.users LIMIT 1",
             extra_env={"DB_QUERY_TEST_PASSWORD": "secret"},
-            fake_usql="""
-                #!/usr/bin/env python3
-                from pathlib import Path
-                import sys
-
-                config_path = Path(sys.argv[sys.argv.index("--config") + 1])
-                config = config_path.read_text()
-                expected = "?timeout=9s&readTimeout=12s&writeTimeout=12s&tls=false"
-                if expected not in config:
-                    print("JDBC options were not applied", file=sys.stderr)
-                    raise SystemExit(93)
-                print('[{"id":1}]')
-            """,
+            fake_pymysql=fake_pymysql_query_module(
+                assertions="""
+                    expected = {
+                        "connect_timeout": 9,
+                        "read_timeout": 12,
+                        "write_timeout": 12,
+                        "ssl_disabled": True,
+                    }
+                    actual = {key: kwargs[key] for key in expected}
+                    if actual != expected or "ssl" in kwargs:
+                        raise AssertionError(kwargs)
+                """
+            ),
         )
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
-    def test_string_dsn_encodes_database_and_ipv6_authority(self):
+    def test_string_dsn_maps_database_and_ipv6_authority_to_driver(self):
         result = self.run_cli(
             """
             [profiles.test]
@@ -383,18 +592,21 @@ class DbQueryCliTests(unittest.TestCase):
             "--sql",
             "SELECT * FROM `report data`.users LIMIT 1",
             extra_env={"DB_QUERY_TEST_PASSWORD": "p@ss/word"},
-            fake_usql="""
-                #!/usr/bin/env python3
-                from pathlib import Path
-                import sys
-
-                config_path = Path(sys.argv[sys.argv.index("--config") + 1])
-                config = config_path.read_text()
-                expected = "mysql://read%20only:p%40ss%2Fword@[2001:db8::1]:3307/report%20data?"
-                if expected not in config or "report%2520data" in config:
-                    raise SystemExit(94)
-                print('[{"id":1}]')
-            """,
+            fake_pymysql=fake_pymysql_query_module(
+                assertions="""
+                    import os
+                    expected = {
+                        "host": "2001:db8::1",
+                        "port": 3307,
+                        "user": "read only",
+                        "password": os.environ["DB_QUERY_TEST_PASSWORD"],
+                        "database": "report data",
+                    }
+                    actual = {key: kwargs[key] for key in expected}
+                    if actual != expected:
+                        raise AssertionError(kwargs)
+                """
+            ),
         )
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -613,7 +825,7 @@ class DbQueryCliTests(unittest.TestCase):
         self.assertEqual(payload["error"]["code"], "CONNECTION_FAILED")
         self.assertIn("read-only", payload["error"]["message"])
 
-    def test_supported_read_only_statements_reach_usql(self):
+    def test_supported_read_only_statements_reach_pymysql(self):
         config = """
             [profiles.test]
             url = "mysql://db.example/"
@@ -631,11 +843,6 @@ class DbQueryCliTests(unittest.TestCase):
             "DESCRIBE app.users",
             "EXPLAIN SELECT * FROM app.users",
         )
-        fake_usql = """
-            #!/usr/bin/env python3
-            print('[]')
-        """
-
         for sql in statements:
             with self.subTest(sql=sql):
                 result = self.run_cli(
@@ -645,7 +852,7 @@ class DbQueryCliTests(unittest.TestCase):
                     "test",
                     "--stdin",
                     extra_env={"DB_QUERY_TEST_PASSWORD": "secret"},
-                    fake_usql=fake_usql,
+                    fake_pymysql=fake_pymysql_query_module(expected_sql=sql),
                     stdin=sql,
                 )
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -693,7 +900,8 @@ class DbQueryCliTests(unittest.TestCase):
         self.assertEqual(json.loads(result.stdout)["error"]["code"], "CONFIG_ERROR")
         self.assertIn("serverTimezone", result.stdout)
 
-    def test_usql_error_is_classified_and_credentials_are_redacted(self):
+    def test_query_connection_error_is_classified_and_credentials_are_redacted(self):
+        sql = "SELECT * FROM app.users WHERE token = 'original-sql-secret' LIMIT 1"
         result = self.run_cli(
             """
             [profiles.test]
@@ -706,21 +914,26 @@ class DbQueryCliTests(unittest.TestCase):
             "--profile",
             "test",
             "--sql",
-            "SELECT * FROM app.users LIMIT 1",
+            sql,
             extra_env={"DB_QUERY_TEST_PASSWORD": "secret-password"},
-            fake_usql="""
-                #!/usr/bin/env python3
-                import sys
-                print("Access denied for readonly-user using secret-password", file=sys.stderr)
-                raise SystemExit(1)
-            """,
+            fake_pymysql=fake_pymysql_module(
+                error_args=(
+                    1045,
+                    "Access denied for readonly-user using secret-password at jdbc:mysql://db.example/",
+                ),
+                sqlstate="28000",
+            ),
         )
 
         self.assertEqual(result.returncode, 4)
         payload = json.loads(result.stdout)
         self.assertEqual(payload["error"]["code"], "CONNECTION_FAILED")
+        self.assertEqual(payload["error"]["mysql_errno"], 1045)
+        self.assertEqual(payload["error"]["sqlstate"], "28000")
         self.assertNotIn("readonly-user", result.stdout + result.stderr)
         self.assertNotIn("secret-password", result.stdout + result.stderr)
+        self.assertNotIn("jdbc:mysql://db.example/", result.stdout + result.stderr)
+        self.assertNotIn(sql, result.stdout + result.stderr)
 
     def test_empty_password_does_not_corrupt_error_classification(self):
         result = self.run_cli(
@@ -737,18 +950,13 @@ class DbQueryCliTests(unittest.TestCase):
             "--sql",
             "SELECT * FROM app.users LIMIT 1",
             extra_env={"DB_QUERY_TEST_PASSWORD": ""},
-            fake_usql="""
-                #!/usr/bin/env python3
-                import sys
-                print("Access denied", file=sys.stderr)
-                raise SystemExit(1)
-            """,
+            fake_pymysql=fake_pymysql_module(error_args=(1045, "Access denied")),
         )
 
         self.assertEqual(result.returncode, 4)
         self.assertEqual(json.loads(result.stdout)["error"]["code"], "CONNECTION_FAILED")
 
-    def test_missing_usql_has_stable_exit_code(self):
+    def test_json_query_does_not_require_usql_on_path(self):
         result = self.run_cli(
             """
             [profiles.test]
@@ -763,10 +971,11 @@ class DbQueryCliTests(unittest.TestCase):
             "--sql",
             "SELECT * FROM app.users LIMIT 1",
             extra_env={"DB_QUERY_TEST_PASSWORD": "secret", "PATH": "/path/that/does/not/exist"},
+            fake_pymysql=fake_pymysql_query_module(),
         )
 
-        self.assertEqual(result.returncode, 127)
-        self.assertEqual(json.loads(result.stdout)["error"]["code"], "USQL_NOT_FOUND")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(json.loads(result.stdout)["rows"], [{"id": 1}])
 
     def test_query_timeout_has_stable_error(self):
         result = self.run_cli(
@@ -784,15 +993,17 @@ class DbQueryCliTests(unittest.TestCase):
             "--sql",
             "SELECT * FROM app.users LIMIT 1",
             extra_env={"DB_QUERY_TEST_PASSWORD": "secret"},
-            fake_usql="""
-                #!/usr/bin/env python3
-                import time
-                time.sleep(2)
-            """,
+            fake_pymysql=fake_pymysql_query_module(
+                error_args=(2013, "Lost connection during query (timed out)"),
+                sqlstate="HY000",
+            ),
         )
 
         self.assertEqual(result.returncode, 5)
-        self.assertEqual(json.loads(result.stdout)["error"]["code"], "QUERY_TIMEOUT")
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["error"]["code"], "QUERY_TIMEOUT")
+        self.assertEqual(payload["error"]["mysql_errno"], 2013)
+        self.assertEqual(payload["error"]["sqlstate"], "HY000")
 
     def test_csv_format_is_passed_through(self):
         result = self.run_cli(
