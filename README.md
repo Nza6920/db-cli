@@ -127,6 +127,29 @@ db-query validate --profile uat --connect
 db-query validate --profile prod --connect --confirm-profile prod
 ```
 
+## Skill
+
+The repository provides an explicitly invoked `$db-query` skill at
+[`.agents/skills/db-query/SKILL.md`](.agents/skills/db-query/SKILL.md):
+
+```text
+$db-query use the prod profile to inspect the latest 20 waybills for project 252143
+```
+
+Ordinary database discussions do not trigger it automatically. Each invocation
+selects exactly one profile and runs one bounded, read-only statement at a time.
+For production, the skill shows the exact profile and SQL and waits for explicit
+approval of that unchanged pair; every SQL or profile change requires new
+approval. Results separate returned database evidence from inference and keep
+credentials out of output. Complex investigations use `EXPLAIN` or multiple
+bounded statements instead of one expensive query; every split production
+statement is approved separately. Write execution remains outside the skill
+boundary.
+
+To use it in another repository, install or link `.agents/skills/db-query` into
+that repository's skills directory and make sure both `db-query` and `usql` are
+installed.
+
 ## Develop
 
 ```bash

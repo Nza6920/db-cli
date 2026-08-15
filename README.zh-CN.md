@@ -118,6 +118,26 @@ db-query validate --profile uat --connect
 db-query validate --profile prod --connect --confirm-profile prod
 ```
 
+## Skill
+
+仓库内显式调用的 `$db-query` skill 位于
+[`.agents/skills/db-query/SKILL.md`](.agents/skills/db-query/SKILL.md)：
+
+```text
+$db-query 使用 prod profile 查询项目 252143 最近 20 条运单
+```
+
+它不会因普通的数据库讨论自动触发。每次调用只选择一个明确的 profile，
+并且每次只执行一条有范围限制的只读 SQL。对于 production，skill 会先展示
+完整的 profile 和 SQL，并等待用户明确批准这个未发生变化的组合；SQL 或
+profile 发生任何变化都必须重新批准。结果会区分数据库返回证据与推断，
+同时避免在输出中暴露凭据。复杂调查会使用 `EXPLAIN`，或将高开销 SQL
+拆成多条有范围限制的语句逐条执行；拆分后的每条 production SQL 都需要
+单独批准。写操作不在该 skill 的执行边界内。
+
+如需在其他仓库使用，将 `.agents/skills/db-query` 安装或链接到相应仓库的
+skills 目录，并确保 `db-query` 和 `usql` 均已安装。
+
 ## 开发
 
 ```bash
