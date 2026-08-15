@@ -11,7 +11,7 @@ mutations outside this skill: for a write request, provide read-only verificatio
 SQL and identify the separate approval path required for execution.
 
 1. Verify the tooling. Resolve both `db-query` and `usql` on `PATH`. If either is
-   missing, read the [installation instructions](../../../README.md#install),
+   missing, read the [installation instructions](https://github.com/Nza6920/db-cli#install),
    report that dependency and its current installation command, then stop.
    Complete this step when both commands resolve without implicit installation.
 2. Establish the target. Run `db-query profiles` and require exactly one profile
