@@ -87,6 +87,7 @@ def main(argv: list[str] | None = None) -> int:
                         "ok": True,
                         "profile": profile.name,
                         "connected": True,
+                        "tls_active": connection_result.tls_active,
                         "duration_ms": connection_result.duration_ms,
                     }
                 )

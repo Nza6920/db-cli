@@ -18,14 +18,26 @@ RUN_INTEGRATION = os.environ.get("DB_QUERY_RUN_MYSQL_INTEGRATION") == "1"
 
 @unittest.skipUnless(RUN_INTEGRATION, "set DB_QUERY_RUN_MYSQL_INTEGRATION=1")
 class DisposableMySqlCliTests(unittest.TestCase):
-    container_name: str
-    port: int
+    container_names: list[str]
+    tls_port: int
+    plaintext_port: int
 
     @classmethod
     def setUpClass(cls) -> None:
         if shutil.which("docker") is None:
             raise unittest.SkipTest("docker is not installed")
-        cls.container_name = f"db-query-integration-{uuid.uuid4().hex[:12]}"
+        cls.container_names = []
+        try:
+            cls.tls_port = cls._start_container("tls")
+            cls.plaintext_port = cls._start_container("plaintext", "--skip-ssl")
+        except BaseException:
+            cls._remove_containers()
+            raise
+
+    @classmethod
+    def _start_container(cls, label: str, *server_options: str) -> int:
+        container_name = f"db-query-integration-{label}-{uuid.uuid4().hex[:8]}"
+        cls.container_names.append(container_name)
         subprocess.run(
             [
                 "docker",
@@ -33,7 +45,7 @@ class DisposableMySqlCliTests(unittest.TestCase):
                 "--detach",
                 "--rm",
                 "--name",
-                cls.container_name,
+                container_name,
                 "--env",
                 "MYSQL_ROOT_PASSWORD=integration-password",
                 "--env",
@@ -42,64 +54,75 @@ class DisposableMySqlCliTests(unittest.TestCase):
                 "127.0.0.1::3306",
                 "mysql:8.0",
                 "--default-authentication-plugin=mysql_native_password",
+                *server_options,
             ],
             check=True,
             capture_output=True,
             text=True,
         )
-        try:
+        port_deadline = time.monotonic() + 10
+        while time.monotonic() < port_deadline:
             port_output = subprocess.run(
-                ["docker", "port", cls.container_name, "3306/tcp"],
+                ["docker", "port", container_name, "3306/tcp"],
                 check=True,
                 capture_output=True,
                 text=True,
             ).stdout.strip()
-            cls.port = int(port_output.rsplit(":", 1)[1])
-            deadline = time.monotonic() + 60
-            while time.monotonic() < deadline:
-                ready = subprocess.run(
-                    [
-                        "docker",
-                        "exec",
-                        cls.container_name,
-                        "mysqladmin",
-                        "ping",
-                        "--host=127.0.0.1",
-                        "--password=integration-password",
-                        "--silent",
-                    ],
-                    capture_output=True,
-                    text=True,
-                )
-                if ready.returncode == 0:
-                    return
-                time.sleep(1)
-            raise RuntimeError("disposable MySQL did not become ready within 60 seconds")
-        except BaseException:
-            cls._remove_container()
-            raise
+            if ":" in port_output:
+                port = int(port_output.rsplit(":", 1)[1])
+                break
+            time.sleep(0.2)
+        else:
+            logs = subprocess.run(
+                ["docker", "logs", container_name],
+                check=False,
+                capture_output=True,
+                text=True,
+            ).stderr.strip()
+            raise RuntimeError(f"disposable MySQL {label} exposed no port: {logs}")
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline:
+            ready = subprocess.run(
+                [
+                    "docker",
+                    "exec",
+                    container_name,
+                    "mysqladmin",
+                    "ping",
+                    "--host=127.0.0.1",
+                    "--password=integration-password",
+                    "--silent",
+                ],
+                capture_output=True,
+                text=True,
+            )
+            if ready.returncode == 0:
+                return port
+            time.sleep(1)
+        raise RuntimeError(f"disposable MySQL {label} did not become ready within 60 seconds")
 
     @classmethod
     def tearDownClass(cls) -> None:
-        cls._remove_container()
+        cls._remove_containers()
 
     @classmethod
-    def _remove_container(cls) -> None:
-        subprocess.run(
-            ["docker", "rm", "--force", cls.container_name],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
+    def _remove_containers(cls) -> None:
+        for container_name in cls.container_names:
+            subprocess.run(
+                ["docker", "rm", "--force", container_name],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
 
-    def run_validate(self, tls: str) -> subprocess.CompletedProcess[str]:
+    def run_validate(self, tls: str, port: int) -> subprocess.CompletedProcess[str]:
         with tempfile.TemporaryDirectory() as temp_dir:
             config_path = Path(temp_dir) / "config.toml"
             config_path.write_text(
                 "\n".join(
                     [
                         "[profiles.local]",
-                        f'url = "mysql://127.0.0.1:{self.port}/integration"',
+                        f'url = "mysql://127.0.0.1:{port}/integration"',
                         'username = "root"',
                         'password_env = "DB_QUERY_INTEGRATION_PASSWORD"',
                         'environment = "test"',
@@ -130,12 +153,26 @@ class DisposableMySqlCliTests(unittest.TestCase):
                 check=False,
             )
 
-    def test_preferred_tls_connects_and_required_rejects_untrusted_certificate(self):
-        preferred = self.run_validate("preferred")
-        self.assertEqual(preferred.returncode, 0, preferred.stdout + preferred.stderr)
-        self.assertTrue(json.loads(preferred.stdout)["connected"])
+    def test_all_tls_modes_against_tls_and_plaintext_servers(self):
+        preferred_tls = self.run_validate("preferred", self.tls_port)
+        self.assertEqual(
+            preferred_tls.returncode, 0, preferred_tls.stdout + preferred_tls.stderr
+        )
+        self.assertTrue(json.loads(preferred_tls.stdout)["tls_active"])
 
-        required = self.run_validate("required")
+        preferred_plaintext = self.run_validate("preferred", self.plaintext_port)
+        self.assertEqual(
+            preferred_plaintext.returncode,
+            0,
+            preferred_plaintext.stdout + preferred_plaintext.stderr,
+        )
+        self.assertFalse(json.loads(preferred_plaintext.stdout)["tls_active"])
+
+        disabled = self.run_validate("disabled", self.tls_port)
+        self.assertEqual(disabled.returncode, 0, disabled.stdout + disabled.stderr)
+        self.assertFalse(json.loads(disabled.stdout)["tls_active"])
+
+        required = self.run_validate("required", self.tls_port)
         self.assertEqual(required.returncode, 4, required.stdout + required.stderr)
         self.assertEqual(json.loads(required.stdout)["error"]["code"], "CONNECTION_FAILED")
         self.assertNotIn("integration-password", required.stdout + required.stderr)

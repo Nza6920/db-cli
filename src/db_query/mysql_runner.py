@@ -4,15 +4,16 @@ from dataclasses import dataclass
 import ssl
 import time
 from typing import Any
-from urllib.parse import quote
 
 from db_query.config import Profile
 from db_query.errors import RunnerError
+from db_query.redaction import redact_connection_message
 
 
 @dataclass(frozen=True)
 class ConnectionResult:
     duration_ms: int
+    tls_active: bool
 
 
 class _ReadOnlySessionError(RuntimeError):
@@ -55,10 +56,12 @@ def validate_connection(profile: Profile, password: str) -> ConnectionResult:
                     raise _ReadOnlySessionError(
                         "database session did not enter read-only transaction mode"
                     )
+                cursor.execute("SHOW SESSION STATUS LIKE 'Ssl_cipher'")
+                tls_status = cursor.fetchone()
     except pymysql.MySQLError as exc:
         raise RunnerError(
             "CONNECTION_FAILED",
-            _redact(str(exc), profile, password),
+            redact_connection_message(str(exc), profile, password),
             4,
             **_mysql_error_details(exc),
         ) from exc
@@ -69,10 +72,16 @@ def validate_connection(profile: Profile, password: str) -> ConnectionResult:
     except (OSError, ssl.SSLError) as exc:
         raise RunnerError(
             "CONNECTION_FAILED",
-            _redact(str(exc) or "TLS initialization failed", profile, password),
+            redact_connection_message(
+                str(exc) or "TLS initialization failed", profile, password
+            ),
             4,
         ) from exc
-    return ConnectionResult(duration_ms=round((time.monotonic() - started) * 1000))
+    tls_active = bool(tls_status and len(tls_status) > 1 and tls_status[1])
+    return ConnectionResult(
+        duration_ms=round((time.monotonic() - started) * 1000),
+        tls_active=tls_active,
+    )
 
 
 def _mysql_error_details(exc: BaseException) -> dict[str, object]:
@@ -82,14 +91,3 @@ def _mysql_error_details(exc: BaseException) -> dict[str, object]:
     if sqlstate := getattr(exc, "sqlstate", None):
         details["sqlstate"] = sqlstate
     return details
-
-
-def _redact(message: str, profile: Profile, password: str) -> str:
-    redacted = message
-    if password:
-        redacted = redacted.replace(password, "<REDACTED>").replace(
-            quote(password, safe=""), "<REDACTED>"
-        )
-    return redacted.replace(profile.username, "<REDACTED>").replace(
-        profile.url, "<REDACTED_DSN>"
-    )

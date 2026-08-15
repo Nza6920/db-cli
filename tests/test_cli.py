@@ -17,6 +17,7 @@ def fake_pymysql_module(
     *,
     assertions: str = "",
     read_only_value: int = 1,
+    tls_cipher: str = "TLS_FAKE_CIPHER",
     error_args: tuple[object, ...] | None = None,
     sqlstate: str | None = None,
     module_setup: str = "",
@@ -50,6 +51,8 @@ class Cursor:
             "SET SESSION TRANSACTION READ ONLY",
             "SELECT @@SESSION.transaction_read_only",
         ]
+        if {read_only_value} == 1:
+            expected.append("SHOW SESSION STATUS LIKE 'Ssl_cipher'")
         if self.statements != expected:
             raise AssertionError(self.statements)
 
@@ -57,7 +60,9 @@ class Cursor:
         self.statements.append(sql)
 
     def fetchone(self):
-        return ({read_only_value},)
+        if self.statements[-1] == "SELECT @@SESSION.transaction_read_only":
+            return ({read_only_value},)
+        return ("Ssl_cipher", {tls_cipher!r})
 
 class Connection:
     def __enter__(self):
@@ -454,6 +459,7 @@ class DbQueryCliTests(unittest.TestCase):
         )
         self.assertEqual(confirmed.returncode, 0, confirmed.stderr)
         self.assertEqual(json.loads(confirmed.stdout)["connected"], True)
+        self.assertEqual(json.loads(confirmed.stdout)["tls_active"], True)
 
     def test_validate_connect_uses_preferred_tls_and_jdbc_timeouts(self):
         result = self.run_cli(
@@ -490,6 +496,7 @@ class DbQueryCliTests(unittest.TestCase):
         )
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(json.loads(result.stdout)["tls_active"], True)
         self.assertEqual(json.loads(result.stdout)["connected"], True)
 
     def test_validate_connect_reports_tls_initialization_failure_as_json(self):
@@ -539,6 +546,7 @@ class DbQueryCliTests(unittest.TestCase):
             "--connect",
             extra_env={"DB_QUERY_TEST_PASSWORD": "secret"},
             fake_pymysql=fake_pymysql_module(
+                tls_cipher="",
                 assertions="""
                     if kwargs.get("ssl_disabled") is not True or "ssl" in kwargs:
                         raise AssertionError(kwargs)
@@ -547,6 +555,7 @@ class DbQueryCliTests(unittest.TestCase):
         )
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(json.loads(result.stdout)["tls_active"], False)
 
     def test_validate_connect_reports_redacted_mysql_error_details(self):
         result = self.run_cli(

@@ -11,6 +11,7 @@ from urllib.parse import quote, urlencode
 
 from db_query.config import Profile
 from db_query.errors import RunnerError
+from db_query.redaction import redact_connection_message
 
 
 @dataclass(frozen=True)
@@ -64,7 +65,9 @@ def run_query(profile: Profile, password: str, sql: str, output_format: str) -> 
         duration_ms = round((time.monotonic() - started) * 1000)
 
     if completed.returncode != 0:
-        message = _redact(completed.stderr.strip() or "usql failed", profile, password)
+        message = redact_connection_message(
+            completed.stderr.strip() or "usql failed", profile, password
+        )
         connection_markers = (
             "access denied",
             "authentication",
@@ -119,12 +122,3 @@ def _terminated_sql(sql: str) -> str:
 
 def _yaml_string(value: str) -> str:
     return json.dumps(value, ensure_ascii=False)
-
-
-def _redact(message: str, profile: Profile, password: str) -> str:
-    redacted = message
-    if password:
-        redacted = redacted.replace(password, "<REDACTED>").replace(
-            quote(password, safe=""), "<REDACTED>"
-        )
-    return redacted.replace(profile.username, "<REDACTED>").replace(profile.url, "<REDACTED_DSN>")
