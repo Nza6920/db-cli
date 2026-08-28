@@ -53,9 +53,12 @@ pipx install --force "git+https://github.com/Nza6920/db-cli.git@v0.1.2"
 
 ## 配置
 
-将 [`config.example.toml`](config.example.toml) 复制到
-`${XDG_CONFIG_HOME:-~/.config}/db-cli/config.toml`，编辑 profiles，再通过各
-profile 指定的环境变量提供密码：
+在 Linux 和 macOS 上，将 [`config.example.toml`](config.example.toml) 复制到
+`${XDG_CONFIG_HOME:-~/.config}/db-cli/config.toml`；Windows 默认位置为
+`%APPDATA%\db-cli\config.toml`。编辑 profiles 后，通过各 profile 指定的环境
+变量提供密码。
+
+Bash：
 
 ```bash
 export DB_QUERY_PROD_PASSWORD='<password>'
@@ -63,9 +66,26 @@ db-query profiles
 db-query validate
 ```
 
+PowerShell：
+
+```powershell
+$configPath = Join-Path $env:APPDATA 'db-cli\config.toml'
+New-Item -ItemType Directory -Force (Split-Path $configPath) | Out-Null
+Copy-Item .\config.example.toml $configPath
+$env:DB_QUERY_PROD_PASSWORD = '<password>'
+db-query profiles
+db-query validate
+```
+
 配置查找顺序为 `--config`、`DB_QUERY_CONFIG`、
-`XDG_CONFIG_HOME/db-cli/config.toml`、`~/.config/db-cli/config.toml`。
-文件所有者、符号链接和权限过宽会产生警告。明文密码字段会被拒绝。
+`XDG_CONFIG_HOME/db-cli/config.toml`，最后是上述平台默认位置。Windows 缺少
+`APPDATA` 时回退到 `%USERPROFILE%\AppData\Roaming\db-cli\config.toml`。不会
+自动查找旧的 Windows 路径 `%USERPROFILE%\.config\db-cli\config.toml`；请移动
+文件，或通过 `DB_QUERY_CONFIG`、`XDG_CONFIG_HOME`、`--config` 显式选择。
+所有平台都会对符号链接给出警告；文件 owner 和 POSIX mode 权限过宽仅在
+POSIX 系统检查，本工具不审计 Windows ACL。明文密码字段会被拒绝。TOML 必须
+使用 UTF-8；使用 Windows PowerShell 5.1 时，请保留示例文件编码，或使用可将
+文件保存为 UTF-8 的编辑器。
 
 支持的 JDBC URL 参数为 `connectTimeout`、`socketTimeout` 和 `useSSL`。
 显式 profile timeout 和 TLS 字段优先，其次是 JDBC URL 参数，最后使用 5 秒
@@ -89,6 +109,17 @@ FROM logistics.t_waybill
 ORDER BY id DESC
 LIMIT 20;
 SQL
+```
+
+PowerShell 可通过 here-string 传入相同 SQL：
+
+```powershell
+@'
+SELECT id, status
+FROM logistics.t_waybill
+ORDER BY id DESC
+LIMIT 20;
+'@ | db-query query --profile uat --stdin
 ```
 
 production 查询必须先审查准确的 profile 和 SQL，再提供完全匹配的确认：

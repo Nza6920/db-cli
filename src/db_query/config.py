@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 import os
 from pathlib import Path
 import re
+import sys
 import tomllib
 from urllib.parse import parse_qsl, unquote, urlsplit
 
@@ -39,13 +41,26 @@ class Config:
     warnings: tuple[str, ...]
 
 
-def config_path(explicit: str | None = None) -> Path:
+def config_path(
+    explicit: str | None = None,
+    *,
+    environ: Mapping[str, str] | None = None,
+    platform: str | None = None,
+    home: Path | None = None,
+) -> Path:
     if explicit:
         return Path(explicit).expanduser()
-    if env_path := os.environ.get("DB_QUERY_CONFIG"):
+    environment = environ if environ is not None else os.environ
+    if env_path := environment.get("DB_QUERY_CONFIG"):
         return Path(env_path).expanduser()
-    config_home = os.environ.get("XDG_CONFIG_HOME")
-    base = Path(config_home).expanduser() if config_home else Path.home() / ".config"
+    if config_home := environment.get("XDG_CONFIG_HOME"):
+        return Path(config_home).expanduser() / "db-cli" / "config.toml"
+    user_home = home if home is not None else Path.home()
+    if (platform if platform is not None else sys.platform) == "win32":
+        appdata = environment.get("APPDATA")
+        base = Path(appdata).expanduser() if appdata else user_home / "AppData" / "Roaming"
+    else:
+        base = user_home / ".config"
     return base / "db-cli" / "config.toml"
 
 
@@ -211,10 +226,13 @@ def _file_warnings(path: Path) -> list[str]:
     try:
         if path.is_symlink():
             warnings.append(f"config file is a symbolic link: {path}")
-        mode = path.stat().st_mode & 0o777
+        if os.name != "posix":
+            return warnings
+        stat_result = path.stat()
+        mode = stat_result.st_mode & 0o777
         if mode & 0o077:
             warnings.append(f"config file permissions are broader than 0600: {path}")
-        if path.stat().st_uid != os.getuid():
+        if stat_result.st_uid != os.getuid():
             warnings.append(f"config file is not owned by the current user: {path}")
     except FileNotFoundError:
         pass

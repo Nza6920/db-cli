@@ -58,9 +58,12 @@ pipx install --force "git+https://github.com/Nza6920/db-cli.git@v0.1.2"
 
 ## Configure
 
-Copy [`config.example.toml`](config.example.toml) to
-`${XDG_CONFIG_HOME:-~/.config}/db-cli/config.toml`, edit its profiles, and
-export each password through the environment variable named by its profile:
+On Linux and macOS, copy [`config.example.toml`](config.example.toml) to
+`${XDG_CONFIG_HOME:-~/.config}/db-cli/config.toml`. On Windows, the default is
+`%APPDATA%\db-cli\config.toml`. Edit its profiles, then provide each password
+through the environment variable named by its profile.
+
+Bash:
 
 ```bash
 export DB_QUERY_PROD_PASSWORD='<password>'
@@ -68,10 +71,28 @@ db-query profiles
 db-query validate
 ```
 
+PowerShell:
+
+```powershell
+$configPath = Join-Path $env:APPDATA 'db-cli\config.toml'
+New-Item -ItemType Directory -Force (Split-Path $configPath) | Out-Null
+Copy-Item .\config.example.toml $configPath
+$env:DB_QUERY_PROD_PASSWORD = '<password>'
+db-query profiles
+db-query validate
+```
+
 Configuration lookup order is `--config`, `DB_QUERY_CONFIG`,
-`XDG_CONFIG_HOME/db-cli/config.toml`, then `~/.config/db-cli/config.toml`.
-Ownership, symlink, and broad-permission findings are warnings. Plaintext
-password fields are rejected.
+`XDG_CONFIG_HOME/db-cli/config.toml`, then the platform default above. If
+`APPDATA` is unavailable on Windows, the fallback is
+`%USERPROFILE%\AppData\Roaming\db-cli\config.toml`. The legacy Windows path
+`%USERPROFILE%\.config\db-cli\config.toml` is not searched automatically; move
+the file or select it with `DB_QUERY_CONFIG`, `XDG_CONFIG_HOME`, or `--config`.
+Symlinks produce warnings on every platform. Ownership and broad POSIX-mode
+findings are warnings on POSIX systems only; this command does not audit
+Windows ACLs. Plaintext password fields are rejected. TOML must be UTF-8; when
+using Windows PowerShell 5.1, preserve the example file's encoding or use an
+editor that saves UTF-8.
 
 Supported JDBC URL options are `connectTimeout`, `socketTimeout`, and `useSSL`.
 Explicit profile timeout and TLS fields take precedence, followed by JDBC URL
@@ -97,6 +118,17 @@ FROM logistics.t_waybill
 ORDER BY id DESC
 LIMIT 20;
 SQL
+```
+
+PowerShell can send the same SQL through a here-string:
+
+```powershell
+@'
+SELECT id, status
+FROM logistics.t_waybill
+ORDER BY id DESC
+LIMIT 20;
+'@ | db-query query --profile uat --stdin
 ```
 
 Production queries require review of the exact profile and SQL followed by an
