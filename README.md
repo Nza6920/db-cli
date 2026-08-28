@@ -3,7 +3,7 @@
 English | [简体中文](README.zh-CN.md)
 
 `db-cli` provides the profile-aware, read-only `db-query` command for MySQL.
-Version 0.2.0 connects directly through pinned Python dependencies, so a normal
+Version 0.2.1 connects directly through pinned Python dependencies, so a normal
 pipx installation does not require a separate SQL client executable. It accepts
 MySQL and JDBC MySQL URLs and keeps passwords out of persistent configuration.
 
@@ -36,7 +36,7 @@ Install the fixed GitHub release with pipx. PyMySQL, its RSA support, and
 tabulate are installed with the application; `usql` is not required.
 
 ```bash
-pipx install "git+https://github.com/Nza6920/db-cli.git@v0.2.0"
+pipx install "git+https://github.com/Nza6920/db-cli.git@v0.2.1"
 db-query --help
 ```
 
@@ -49,8 +49,16 @@ repository root.
 | --- | --- | --- |
 | v0.1.2 | usql 0.21.4 | separately installed `usql` required |
 | v0.2.0 | PyMySQL 1.2.0, tabulate 0.10.0 | none |
+| v0.2.1 | PyMySQL 1.2.0, tabulate 0.10.0 | none |
 
-To roll back, install the fixed v0.1.2 tag and restore usql 0.21.4:
+To roll back the Windows configuration-path changes, install v0.2.0:
+
+```bash
+pipx install --force "git+https://github.com/Nza6920/db-cli.git@v0.2.0"
+```
+
+To restore the legacy usql runtime, install the fixed v0.1.2 tag and usql
+0.21.4:
 
 ```bash
 pipx install --force "git+https://github.com/Nza6920/db-cli.git@v0.1.2"
