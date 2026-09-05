@@ -33,6 +33,7 @@ class Profile:
     port: int
     database: str | None
     jdbc_options: tuple[tuple[str, str], ...]
+    max_rows: int = 1000
 
 
 @dataclass(frozen=True)
@@ -109,6 +110,7 @@ def _parse_profile(name: str, values: dict[str, object]) -> Profile:
         "tls",
         "connect_timeout_seconds",
         "query_timeout_seconds",
+        "max_rows",
     }
     unknown = set(values).difference(allowed)
     if unknown:
@@ -135,6 +137,9 @@ def _parse_profile(name: str, values: dict[str, object]) -> Profile:
     query_timeout = _timeout(
         name, values, "query_timeout_seconds", 30, jdbc_options.get("socketTimeout")
     )
+    max_rows = values.get("max_rows", 1000)
+    if type(max_rows) is not int or max_rows <= 0:
+        raise ConfigError(f"profile {name!r} max_rows must be a positive integer")
     return Profile(
         name=name,
         url=url,
@@ -148,6 +153,7 @@ def _parse_profile(name: str, values: dict[str, object]) -> Profile:
         port=port,
         database=database,
         jdbc_options=options,
+        max_rows=max_rows,
     )
 
 

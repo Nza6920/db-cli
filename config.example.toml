@@ -7,6 +7,8 @@ environment = "production"
 tls = "disabled"
 connect_timeout_seconds = 5
 query_timeout_seconds = 30
+# Optional positive integer: maximum explicit SQL LIMIT count (default 1000).
+max_rows = 1000
 
 [profiles.uat]
 url = "jdbc:mysql://uat-db.example.cn:3306/"
@@ -14,3 +16,5 @@ username = "readonly_user"
 password_env = "DB_QUERY_UAT_PASSWORD"
 environment = "staging"
 tls = "required"
+# Each profile can choose its own cap; SQL still needs an explicit LIMIT.
+max_rows = 2000

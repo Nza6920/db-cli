@@ -46,6 +46,7 @@ WRITE_WORDS = {
     "REPAIR",
 }
 AGGREGATES = {"COUNT", "SUM", "AVG", "MIN", "MAX"}
+SET_OPERATORS = {"UNION", "INTERSECT", "EXCEPT"}
 
 
 def validate_read_only(sql: str, max_rows: int = 1000) -> None:
@@ -63,6 +64,7 @@ def validate_read_only(sql: str, max_rows: int = 1000) -> None:
     if not tokens:
         raise SqlSafetyError("SQL_EMPTY", "SQL is empty")
 
+    tokens = _unwrap_query(tokens)
     words = [token.value for token in tokens]
     first = words[0]
     for sequence in (
@@ -78,42 +80,108 @@ def validate_read_only(sql: str, max_rows: int = 1000) -> None:
     if any(word in {"GET_LOCK", "RELEASE_LOCK"} for word in words):
         raise SqlSafetyError("SQL_DANGEROUS_CLAUSE", "advisory lock functions are not allowed")
 
-    if first not in ALLOWED_START or any(word in WRITE_WORDS for word in words):
+    query_start = next((word for word in words if word != "("), "")
+    parenthesized_query = first == "(" and query_start in {"SELECT", "WITH"}
+    if (first not in ALLOWED_START and not parenthesized_query) or any(
+        word in WRITE_WORDS for word in words
+    ):
         raise SqlSafetyError("SQL_NOT_READ_ONLY", "only read-only SQL is allowed")
     if first == "WITH" and "SELECT" not in words:
         raise SqlSafetyError("SQL_NOT_READ_ONLY", "WITH must lead to a SELECT")
 
-    if (
+    top_words = [token.value for token in tokens if token.depth == 0]
+    combined = any(word in SET_OPERATORS for word in top_words)
+    hidden_cte_body = first == "WITH" and "SELECT" not in top_words
+    if parenthesized_query or (
         first in {"SELECT", "WITH"}
-        and _has_top_level_from(tokens)
-        and not _is_top_level_aggregate(tokens)
+        and (
+            combined
+            or hidden_cte_body
+            or (_has_top_level_from(tokens) and not _is_top_level_aggregate(tokens))
+        )
     ):
         _validate_limit(tokens, max_rows)
+
+
+def _unwrap_query(tokens: list[Token]) -> list[Token]:
+    """Remove only parentheses enclosing the entire statement, preserving scope."""
+    pairs: dict[int, int] = {}
+    stack: list[int] = []
+    for index, token in enumerate(tokens):
+        if token.value == "(":
+            stack.append(index)
+        elif token.value == ")":
+            pairs[stack.pop()] = index
+    left, right = 0, len(tokens) - 1
+    while left < right and pairs.get(left) == right:
+        left += 1
+        right -= 1
+    if left > right:
+        raise SqlSafetyError("SQL_INVALID", "empty query parentheses")
+    return [Token(token.value, token.depth - left) for token in tokens[left : right + 1]]
 
 
 def _validate_limit(tokens: list[Token], max_rows: int) -> None:
     positions = [
         index for index, token in enumerate(tokens) if token.depth == 0 and token.value == "LIMIT"
     ]
-    if not positions:
-        raise SqlSafetyError("SQL_LIMIT_REQUIRED", "detail queries require an outer LIMIT")
-    index = positions[-1]
-    if index + 1 >= len(tokens) or not tokens[index + 1].value.isdigit():
-        raise SqlSafetyError("SQL_LIMIT_INVALID", "LIMIT must use an integer literal")
-    row_count = int(tokens[index + 1].value)
-    if index + 2 < len(tokens) and tokens[index + 2].value == ",":
-        if index + 3 >= len(tokens) or not tokens[index + 3].value.isdigit():
-            raise SqlSafetyError("SQL_LIMIT_INVALID", "LIMIT must use integer literals")
-        row_count = int(tokens[index + 3].value)
-    elif index + 2 < len(tokens) and tokens[index + 2].value == "OFFSET":
-        if index + 3 >= len(tokens) or not tokens[index + 3].value.isdigit():
-            raise SqlSafetyError("SQL_LIMIT_INVALID", "OFFSET must use an integer literal")
-    if row_count > max_rows:
+    last_operator = max(
+        (i for i, token in enumerate(tokens) if token.depth == 0 and token.value in SET_OPERATORS),
+        default=-1,
+    )
+    if not positions or positions[-1] < last_operator:
+        raise SqlSafetyError("SQL_LIMIT_REQUIRED", "queries require an outer LIMIT on the whole result")
+    if len(positions) != 1:
+        raise SqlSafetyError("SQL_LIMIT_INVALID", "cannot confirm the scope of multiple outer LIMIT clauses")
+    tail = tokens[positions[0] + 1 :]
+    values = [token.value for token in tail]
+    if len(values) == 1:
+        numbers = values
+        row_count = values[0]
+    elif len(values) == 3 and values[1] in {",", "OFFSET"}:
+        numbers = [values[0], values[2]]
+        row_count = values[2] if values[1] == "," else values[0]
+    else:
+        raise SqlSafetyError("SQL_LIMIT_INVALID", "LIMIT must end the query with integer literals")
+    if any(token.depth != 0 for token in tail) or any(
+        not value.isascii() or not value.isdigit() for value in numbers
+    ):
+        raise SqlSafetyError("SQL_LIMIT_INVALID", "LIMIT and OFFSET must use integer literals")
+    # Compare decimal strings so oversized input cannot hit Python's int conversion limit.
+    count = row_count.lstrip("0") or "0"
+    maximum = str(max_rows)
+    if len(count) > len(maximum) or (len(count) == len(maximum) and count > maximum):
         raise SqlSafetyError("SQL_LIMIT_EXCEEDED", f"LIMIT must not exceed {max_rows}")
 
 
 def _is_top_level_aggregate(tokens: list[Token]) -> bool:
-    return any(token.depth == 0 and token.value in AGGREGATES for token in tokens)
+    words = [token.value for token in tokens if token.depth == 0]
+    if any(word in SET_OPERATORS | {"GROUP", "OVER"} for word in words):
+        return False
+    if "SELECT" not in words or "FROM" not in words:
+        return False
+    projection = words[words.index("SELECT") + 1 : words.index("FROM")]
+    # At this depth, a function's arguments disappear but its parentheses remain.
+    index = 0
+    while index < len(projection):
+        if projection[index] not in AGGREGATES or projection[index + 1 : index + 3] != ["(", ")"]:
+            return False
+        index += 3
+        if index < len(projection) and projection[index] == "AS":
+            index += 1
+            if index == len(projection):
+                return False
+        if index < len(projection) and projection[index] != ",":
+            alias = projection[index]
+            if not alias.isidentifier():
+                return False
+            index += 1
+        if index == len(projection):
+            return True
+        if projection[index] != ",":
+            return False
+        index += 1
+    return False
 
 
 def _has_top_level_from(tokens: list[Token]) -> bool:

@@ -129,7 +129,7 @@ def main(argv: list[str] | None = None) -> int:
         _emit_warnings(_warnings_for(config, [profile.name]))
         sql = sys.stdin.read() if args.stdin else args.sql
         try:
-            validate_read_only(sql)
+            validate_read_only(sql, max_rows=profile.max_rows)
         except SqlSafetyError as exc:
             return _error(exc.code, str(exc), 2)
         if profile.environment == "production" and args.confirm_profile != profile.name:

@@ -15,8 +15,8 @@
 - 只允许一条 `SELECT`、只读 `WITH`、`SHOW`、`DESC`/`DESCRIBE` 或
   `EXPLAIN`；拒绝写操作、多语句、客户端 meta-command、导出、锁定读、
   advisory lock 和 executable comment。
-- 包含顶层 `FROM` 的非聚合明细查询必须使用最外层字面量 `LIMIT`，且不超过
-  1000。
+- 非豁免的明细和组合查询必须使用最外层字面量 `LIMIT`，且不超过所选
+  profile 的 `max_rows`（默认 1000）。
 - production 查询和 production 连接测试必须提供完全匹配的
   `--confirm-profile`。
 - 每个连接启用 autocommit、禁用 local infile，并在执行 SQL 前将 session
@@ -147,10 +147,26 @@ count 和 rows。`--format csv` 使用标准 CSV quoting，以 `\N` 表示 null�
 alias。工具没有总输出字节上限，因此即使明细行数受限，也应避免选择大型
 binary 字段。
 
-安全扫描器只接受一条受支持的只读语句。明细查询必须使用不超过 1000 的
-最外层字面量 `LIMIT`；没有顶层 `FROM` 的常量查询（如 `SELECT 1`）不需要
-`LIMIT`。数据库账号自身仍应只有只读权限：静态扫描和 session 只读模式属于
-defense in depth，不能替代数据库授权。
+每个 profile 的 TOML 表可配置 `max_rows = 2000`，表示 SQL LIMIT 返回行数的
+允许上限，不会自动插入 LIMIT。省略时默认 1000，接受更大或更小的正整数；
+布尔值、字符串、浮点数、零和负数均为配置错误。各 profile 独立生效，不提供
+全局配置、环境变量或 CLI 覆盖。超限错误会显示实际生效的上限。
+
+安全扫描器只接受一条受支持的只读语句。明细查询必须使用最外层字面量
+`LIMIT`；`LIMIT count OFFSET offset` 和 `LIMIT offset,count` 都按 count 与
+`max_rows` 比较。单行聚合豁免仅适用于投影全部为明确的 `COUNT`、`SUM`、
+`AVG`、`MIN`、`MAX` 调用，允许别名和多个聚合。分组、窗口函数、混合投影和
+聚合外包表达式都要求 LIMIT；名为 `max` 的普通标识符不会获得豁免。
+
+UNION 等可识别的组合查询必须限制整个结果，即使分支是常量或聚合也不豁免。
+分支、CTE、子查询内部的 LIMIT 不能代替整体限制。支持包围整个查询的括号；
+无法确认作用范围时返回结构化错误，要求用户提供可识别的最外层 LIMIT，
+不会自动改写 SQL。
+
+`SHOW`、`DESC`/`DESCRIBE`、`EXPLAIN` 和没有顶层 `FROM` 的简单常量查询
+（如 `SELECT 1`）保留豁免。这不是全局输出行数上限，也不保证扫描量或计算
+成本，没有执行端行数兜底。数据库账号自身仍应只有只读权限：静态扫描和
+session 只读模式属于 defense in depth，不能替代数据库授权。
 
 默认只离线校验配置；也可以显式测试指定连接：
 

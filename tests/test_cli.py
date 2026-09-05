@@ -186,6 +186,194 @@ class DbQueryCliTests(unittest.TestCase):
                 check=False,
             )
 
+    def check_guarded_query(self, sql: str, code: str | None = None, max_rows: int | None = None):
+        config = """
+            [profiles.test]
+            url = "mysql://db.example/app"
+            username = "readonly"
+            password_env = "DB_QUERY_TEST_PASSWORD"
+            environment = "test"
+        """
+        if max_rows is not None:
+            config += f"max_rows = {max_rows}\n"
+        result = self.run_cli(
+            config, "query", "--profile", "test", "--sql", sql,
+            extra_env={"DB_QUERY_TEST_PASSWORD": "secret"},
+            fake_pymysql=(
+                "raise AssertionError('database must not be called')"
+                if code else fake_pymysql_query_module(expected_sql=sql)
+            ),
+        )
+        self.assertEqual(result.returncode, 2 if code else 0, result.stdout + result.stderr)
+        if code:
+            self.assertEqual(json.loads(result.stdout)["error"]["code"], code)
+
+    def test_max_rows_rejects_invalid_configuration(self):
+        for value in ("true", "false", '"10"', "1.5", "0", "-1"):
+            with self.subTest(value=value):
+                config = f"""
+                    [profiles.test]
+                    url = "mysql://db.example/app"
+                    username = "readonly"
+                    password_env = "DB_QUERY_TEST_PASSWORD"
+                    environment = "test"
+                    max_rows = {value}
+                """
+                for args in (("validate",), ("query", "--profile", "test", "--sql", "SELECT 1")):
+                    result = self.run_cli(
+                        config, *args,
+                        fake_pymysql="raise AssertionError('database must not be called')",
+                    )
+                    self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                    error = json.loads(result.stdout)["error"]
+                    self.assertEqual(error["code"], "CONFIG_ERROR")
+                    self.assertIn("max_rows must be a positive integer", error["message"])
+
+    def test_limit_count_boundaries_and_offset_forms(self):
+        for max_rows in (None, 2, 2000):
+            limit = 1000 if max_rows is None else max_rows
+            for clause in ("0", str(limit), f"{limit} OFFSET 9000", f"9000, {limit}"):
+                with self.subTest(max_rows=max_rows, clause=clause):
+                    self.check_guarded_query(f"SELECT * FROM orders LIMIT {clause}", max_rows=max_rows)
+            for clause in (str(limit + 1), f"9000, {limit + 1}", f"{limit + 1} OFFSET 0"):
+                with self.subTest(max_rows=max_rows, clause=clause):
+                    self.check_guarded_query(
+                        f"SELECT * FROM orders LIMIT {clause}", "SQL_LIMIT_EXCEEDED", max_rows
+                    )
+
+    def test_only_simple_single_row_aggregates_are_exempt(self):
+        queries = (
+            "SELECT SUM(amount) FROM orders GROUP BY customer_id",
+            "SELECT SUM(amount) OVER () FROM orders",
+            "SELECT ROW_NUMBER() OVER (ORDER BY id) FROM orders",
+            "SELECT 1 AS max FROM orders",
+            "SELECT max FROM orders",
+            "SELECT `max` FROM orders",
+            "SELECT 'SUM(amount)' FROM orders",
+            "SELECT id /* MAX(amount) */ FROM orders",
+            "SELECT id, SUM(amount) FROM orders",
+            "SELECT COALESCE(SUM(amount), 0) FROM orders",
+            "SELECT SUM(amount) + 1 FROM orders",
+            "SELECT id FROM orders ORDER BY MAX(amount)",
+            "SELECT * FROM orders WHERE id = (SELECT MAX(id) FROM orders)",
+            "WITH totals AS (SELECT SUM(amount) FROM orders) SELECT * FROM totals",
+        )
+        for sql in queries:
+            with self.subTest(sql=sql):
+                self.check_guarded_query(sql, "SQL_LIMIT_REQUIRED")
+                self.check_guarded_query(sql + " LIMIT 2")
+        for sql in (
+            "SELECT COUNT(*) FROM orders",
+            "SELECT SUM(amount), AVG(amount), MIN(amount), MAX(amount) FROM orders",
+            "SELECT COUNT(*) AS total, SUM(amount) amount FROM orders",
+            "SELECT COUNT(DISTINCT customer_id) AS `count` FROM orders",
+            "WITH recent AS (SELECT * FROM orders LIMIT 5) SELECT COUNT(*) FROM recent",
+        ):
+            with self.subTest(sql=sql):
+                self.check_guarded_query(sql)
+
+    def test_combined_queries_require_a_limit_on_the_whole_result(self):
+        for sql in (
+            "SELECT id FROM orders LIMIT 1 UNION ALL SELECT id FROM archived",
+            "SELECT COUNT(*) FROM orders UNION ALL SELECT COUNT(*) FROM archived",
+            "SELECT 1 UNION ALL SELECT 2",
+            "(SELECT id FROM orders LIMIT 1) UNION ALL (SELECT id FROM archived LIMIT 1)",
+            "WITH recent AS (SELECT id FROM orders LIMIT 1) SELECT * FROM recent",
+            "SELECT * FROM (SELECT id FROM orders LIMIT 1) recent",
+        ):
+            with self.subTest(sql=sql):
+                self.check_guarded_query(sql, "SQL_LIMIT_REQUIRED")
+        for prefix in (
+            "SELECT id FROM orders UNION ALL SELECT id FROM archived",
+            "SELECT COUNT(*) FROM orders UNION SELECT COUNT(*) FROM archived",
+            "SELECT 1 UNION ALL SELECT 2",
+            "(SELECT id FROM orders LIMIT 1) UNION ALL (SELECT id FROM archived LIMIT 1)",
+            "(SELECT id FROM orders UNION ALL SELECT id FROM archived)",
+            "WITH recent AS (SELECT id FROM orders LIMIT 1) SELECT * FROM recent",
+            "SELECT * FROM (SELECT id FROM orders LIMIT 1) recent",
+        ):
+            for max_rows in (2, 2000):
+                with self.subTest(prefix=prefix, max_rows=max_rows):
+                    self.check_guarded_query(prefix + f" LIMIT {max_rows}", max_rows=max_rows)
+                    self.check_guarded_query(
+                        prefix + f" LIMIT {max_rows + 1}", "SQL_LIMIT_EXCEEDED", max_rows
+                    )
+        self.check_guarded_query("((SELECT id FROM orders LIMIT 2))")
+
+    def test_limit_scope_rejects_ambiguous_or_nonliteral_suffixes(self):
+        for clause in ("1 + 2000", "1.5", "@rows", "?", "-1", "１", "1 OFFSET -1", "1, ?", "1 LIMIT 2"):
+            with self.subTest(clause=clause):
+                self.check_guarded_query("SELECT * FROM orders LIMIT " + clause, "SQL_LIMIT_INVALID")
+        self.check_guarded_query("SELECT * FROM orders LIMIT " + "9" * 5000, "SQL_LIMIT_EXCEEDED")
+        self.check_guarded_query("SELECT * FROM orders LIMIT " + "0" * 5000 + "2")
+        for sql in (
+            "SELECT 'LIMIT 1' FROM orders",
+            "SELECT `LIMIT` FROM orders",
+            "SELECT id FROM orders /* LIMIT 1 */",
+            "SELECT id FROM orders WHERE id IN (SELECT id FROM archived LIMIT 1)",
+        ):
+            with self.subTest(sql=sql):
+                self.check_guarded_query(sql, "SQL_LIMIT_REQUIRED")
+        self.check_guarded_query("SELECT 'UNION LIMIT MAX' FROM orders LIMIT 2; -- trailing comment")
+        self.check_guarded_query("SELECT `UNION` FROM orders LIMIT 2 /* LIMIT 9999 */")
+        self.check_guarded_query("SELECT id FROM orders UNION ALL SELECT id FROM archived LIMIT 9000, 2", max_rows=2)
+        self.check_guarded_query("SELECT id FROM orders UNION ALL SELECT id FROM archived LIMIT 2 OFFSET 9000", max_rows=2)
+
+    def test_metadata_commands_keep_limit_exemption(self):
+        for sql in (
+            "SHOW TABLES", "DESC orders", "DESCRIBE orders",
+            "EXPLAIN SELECT id FROM orders UNION ALL SELECT id FROM archived",
+            "SELECT 1",
+        ):
+            with self.subTest(sql=sql):
+                self.check_guarded_query(sql, max_rows=1)
+
+    def test_parenthesized_cte_body_cannot_bypass_outer_limit(self):
+        for sql in (
+            "WITH c AS (SELECT 1) (SELECT * FROM orders)",
+            "WITH c AS (SELECT 1) (SELECT 1 UNION ALL SELECT 2)",
+        ):
+            with self.subTest(sql=sql):
+                self.check_guarded_query(sql, "SQL_LIMIT_REQUIRED")
+                self.check_guarded_query(sql + " LIMIT 2", max_rows=2)
+                self.check_guarded_query(sql + " LIMIT 3", "SQL_LIMIT_EXCEEDED", 2)
+
+    def test_profile_max_rows_controls_query_limit(self):
+        config = """
+            [profiles.small]
+            url = "mysql://db.example/app"
+            username = "readonly"
+            password_env = "DB_QUERY_TEST_PASSWORD"
+            environment = "test"
+            max_rows = 2
+            [profiles.large]
+            url = "mysql://db.example/app"
+            username = "readonly"
+            password_env = "DB_QUERY_TEST_PASSWORD"
+            environment = "test"
+            max_rows = 2000
+        """
+        for profile, sql, code in (
+            ("small", "SELECT * FROM orders LIMIT 2", None),
+            ("small", "SELECT * FROM orders LIMIT 3", "SQL_LIMIT_EXCEEDED"),
+            ("large", "SELECT * FROM orders LIMIT 2000", None),
+            ("large", "SELECT * FROM orders LIMIT 2001", "SQL_LIMIT_EXCEEDED"),
+        ):
+            with self.subTest(profile=profile, sql=sql):
+                result = self.run_cli(
+                    config, "query", "--profile", profile, "--sql", sql,
+                    extra_env={"DB_QUERY_TEST_PASSWORD": "secret"},
+                    fake_pymysql=(
+                        "raise AssertionError('database must not be called')"
+                        if code else fake_pymysql_query_module(expected_sql=sql)
+                    ),
+                )
+                self.assertEqual(result.returncode, 2 if code else 0, result.stdout + result.stderr)
+                if code:
+                    error = json.loads(result.stdout)["error"]
+                    self.assertEqual(error["code"], code)
+                    self.assertIn("2" if profile == "small" else "2000", error["message"])
+
     def test_profiles_reports_safe_connection_metadata(self):
         result = self.run_cli(
             """

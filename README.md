@@ -17,8 +17,8 @@ MySQL and JDBC MySQL URLs and keeps passwords out of persistent configuration.
 - Allow one `SELECT`, read-only `WITH`, `SHOW`, `DESC`/`DESCRIBE`, or `EXPLAIN`
   statement while rejecting writes, multiple statements, client meta-commands,
   exports, locking reads, advisory locks, and executable comments.
-- Require an outer literal `LIMIT` no greater than 1000 for non-aggregate detail
-  queries with a top-level `FROM`.
+- Require an outer literal `LIMIT` for non-exempt detail and combined queries,
+  bounded by the selected profile's `max_rows` (default 1000).
 - Require an exact `--confirm-profile` match for production queries and
   production connection tests.
 - Open every connection with autocommit enabled, local infile disabled, and a
@@ -160,11 +160,33 @@ names fail with `RESULT_ENCODING_FAILED`; provide unique SQL aliases. There is
 no total output-byte limit, so avoid selecting large binary fields even though
 detail row counts are bounded.
 
+Each profile can set `max_rows = 2000` in its TOML table. This is the maximum
+allowed SQL LIMIT count, not an automatically inserted LIMIT. It defaults to
+1000 and accepts any positive integer, smaller or larger than the default;
+booleans, strings, floats, zero, and negative values are configuration errors.
+Profiles have independent limits; there is no global, environment-variable, or
+CLI override. An over-limit error reports the effective profile limit.
+
 The safety scanner accepts one supported read-only statement. Detail reads need
-an outer literal `LIMIT` no greater than 1000; constant queries without a
-top-level `FROM`, such as `SELECT 1`, do not. Use a database account whose grants
-are read-only: static scanning and session read-only mode are defense in depth,
-not replacements for database authorization.
+an outer literal `LIMIT`; both `LIMIT count OFFSET offset` and `LIMIT offset,count`
+check the count against `max_rows`. Only simple projections consisting entirely
+of `COUNT`, `SUM`, `AVG`, `MIN`, or `MAX` calls are exempt as single-row aggregates;
+aliases and multiple aggregate calls are allowed. Grouped queries, window
+functions, mixed projections, and expressions wrapping aggregate calls require
+LIMIT. An identifier named `max` does not grant an exemption.
+
+UNION and other recognized set operations require a LIMIT on the whole result,
+including when branches are constants or aggregates. A branch, CTE, or subquery
+LIMIT does not substitute for that outer limit. Parentheses enclosing the whole
+query are supported; ambiguous scope is rejected with a structured error. SQL
+is never rewritten. Supply an explicit, recognizable outer LIMIT when needed.
+
+`SHOW`, `DESC`/`DESCRIBE`, `EXPLAIN`, and simple constant queries without a top-level
+`FROM`, such as `SELECT 1`, retain their exemptions. This is not a universal
+output cap or a bound on database scans or computation, and there is no runtime
+row-count fallback. Use a database account whose grants are read-only: static
+scanning and session read-only mode are defense in depth, not replacements for
+database authorization.
 
 Validate configuration offline by default, or explicitly test one connection:
 
