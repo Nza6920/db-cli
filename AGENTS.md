@@ -13,12 +13,12 @@ If there is no `.codegraph/` directory, skip CodeGraph entirely — indexing is 
 
 ### Issue tracker
 
-Issues 和规格使用 GitHub Issues；读写前参阅 `docs/agents/issue-tracker.md`。
+Track issues and specs in GitHub Issues. Read `docs/agents/issue-tracker.md` before reading or writing issues.
 
 ### Triage labels
 
-使用默认五种 triage 标签；分类或迁移状态前参阅 `docs/agents/triage-labels.md`。
+Use the five default triage labels. Read `docs/agents/triage-labels.md` before categorizing issues or changing their triage state.
 
 ### Domain docs
 
-采用 single-context 布局；探索代码前参阅 `docs/agents/domain.md`。
+Use a single-context layout. Read `docs/agents/domain.md` before exploring the codebase.
