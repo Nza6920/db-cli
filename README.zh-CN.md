@@ -194,9 +194,22 @@ $db-query 使用 prod profile 查询项目 252143 最近 20 条运单
 
 ## 开发
 
+使用 Python 3.11+，在虚拟环境中安装开发依赖：
+
 ```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python3 -m pip install -e '.[dev]'
+python3 -m mypy
 python3 -m unittest discover -s tests -v
-DB_QUERY_RUN_MYSQL_INTEGRATION=1 python3 -m unittest tests.test_mysql_integration -v
+DB_QUERY_RUN_MYSQL_INTEGRATION=1 python3 -m unittest discover -s tests -p test_mysql_integration.py -v
 ```
+
+Windows PowerShell 使用 `.venv\Scripts\Activate.ps1` 激活虚拟环境。
+
+Mypy 检查 `src/db_query` 和 `tests`，包括未标注类型的函数体。
+版本和配置统一保存在 `pyproject.toml`；配置中仅为 PyMySQL 豁免缺少
+第三方类型信息的错误。GitHub Actions 在推送和 pull request 时使用 Python 3.11
+运行同一类型检查命令。
 
 集成测试只创建一次性本地 MySQL 容器，不访问 UAT 或 production。

@@ -9,8 +9,20 @@ description = "Profile-aware, read-only MySQL queries for agents and automation"
 requires-python = ">=3.11"
 dependencies = ["PyMySQL[rsa]==1.2.0", "tabulate==0.10.0"]
 
+[project.optional-dependencies]
+dev = ["mypy==2.3.1"]
+
 [project.scripts]
 db-query = "db_query.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["src/db_query", "tests"]
+check_untyped_defs = true
+
+[[tool.mypy.overrides]]
+module = ["pymysql", "pymysql.*"]
+ignore_missing_imports = true

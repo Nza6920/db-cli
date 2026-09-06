@@ -215,10 +215,23 @@ repository's skills directory and ensure only `db-query` is available.
 
 ## Develop
 
+Use Python 3.11+ and install the development dependencies in a virtual environment:
+
 ```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python3 -m pip install -e '.[dev]'
+python3 -m mypy
 python3 -m unittest discover -s tests -v
-DB_QUERY_RUN_MYSQL_INTEGRATION=1 python3 -m unittest tests.test_mysql_integration -v
+DB_QUERY_RUN_MYSQL_INTEGRATION=1 python3 -m unittest discover -s tests -p test_mysql_integration.py -v
 ```
+
+On Windows PowerShell, activate the environment with `.venv\Scripts\Activate.ps1`.
+
+Mypy checks `src/db_query` and `tests`, including functions without type
+annotations. Its version and configuration live in `pyproject.toml`; the
+configuration scopes its missing-import exemption to PyMySQL. GitHub Actions runs
+the same type check on pushes and pull requests using Python 3.11.
 
 The integration suite creates disposable local MySQL containers and never
 accesses UAT or production.

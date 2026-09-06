@@ -12,7 +12,8 @@ CLI behavior, and disposable MySQL integration. Specifications: `docs/specs/`. C
 Use Python 3.11+ and install the project in a virtual environment:
 
 ```bash
-python3 -m pip install -e .
+python3 -m pip install -e '.[dev]'
+python3 -m mypy
 db-query --help
 python3 -m unittest discover -s tests -p test_cli.py -v
 python3 -m unittest discover -s tests -v
@@ -25,12 +26,13 @@ MySQL containers. Report skipped tests separately from passing tests.
 Name tests `test_*`. Prefer the existing CLI subprocess and simulated database
 driver boundary for SQL-policy regressions: verify structured errors, rejection
 before database access, and unchanged SQL delivery. Run focused tests during
-implementation and the full suite before completion.
+implementation, then type checking and the full suite before completion.
 
 ## Coding and Contribution Style
 
 Follow existing four-space indentation, type annotations, `snake_case` functions,
-and `PascalCase` classes. No formatter or typechecker is configured in the repo.
+and `PascalCase` classes. Mypy is configured in `pyproject.toml`;
+no formatter is configured.
 Use imperative commit subjects.
 PR descriptions should explain behavior changes, reference issues, and report
 validation. Update both READMEs when user-facing behavior changes.
