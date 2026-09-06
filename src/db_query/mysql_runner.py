@@ -95,54 +95,52 @@ def run_query(profile: Profile, password: str, sql: str) -> QueryResult:
     import pymysql
 
     started = time.monotonic()
-    phase = "connection"
     try:
-        with pymysql.connect(**_connection_options(profile, password)) as connection:
-            with connection.cursor() as cursor:
-                phase = "session"
-                _configure_read_only(cursor)
-                phase = "query"
-                cursor.execute(sql)
-                description = cursor.description or ()
-                columns = [column[0] for column in description]
-                raw_rows = cursor.fetchall()
-    except pymysql.MySQLError as exc:
-        if phase == "query":
-            code = "QUERY_TIMEOUT" if _mysql_errno(exc) == 2013 else "QUERY_FAILED"
+        with _read_only_session(profile, password) as cursor:
+            cursor.execute(sql)
+            description = cursor.description or ()
+            columns = [column[0] for column in description]
+            raw_rows = cursor.fetchall()
+    except _SessionFailure as failure:
+        exc = failure.error
+        if isinstance(exc, pymysql.MySQLError):
+            if failure.operation_started:
+                code = "QUERY_TIMEOUT" if _mysql_errno(exc) == 2013 else "QUERY_FAILED"
+                raise RunnerError(
+                    code,
+                    "database query timed out" if code == "QUERY_TIMEOUT" else "database query failed",
+                    5,
+                    **_mysql_error_details(exc),
+                ) from exc
             raise RunnerError(
-                code,
-                "database query timed out" if code == "QUERY_TIMEOUT" else "database query failed",
-                5,
+                "CONNECTION_FAILED",
+                "database connection or read-only session setup failed",
+                4,
                 **_mysql_error_details(exc),
             ) from exc
-        raise RunnerError(
-            "CONNECTION_FAILED",
-            "database connection or read-only session setup failed",
-            4,
-            **_mysql_error_details(exc),
-        ) from exc
-    except _ReadOnlySessionError as exc:
-        raise RunnerError("CONNECTION_FAILED", str(exc), 4) from exc
-    except RunnerError:
-        raise
-    except (OSError, ssl.SSLError) as exc:
-        code = "QUERY_FAILED" if phase == "query" else "CONNECTION_FAILED"
-        raise RunnerError(
-            code,
-            "database query failed"
-            if code == "QUERY_FAILED"
-            else "database connection or TLS setup failed",
-            5 if code == "QUERY_FAILED" else 4,
-        ) from exc
-    except (UnicodeError, TypeError, ValueError) as exc:
-        code = "RESULT_ENCODING_FAILED" if phase == "query" else "CONNECTION_FAILED"
-        raise RunnerError(
-            code,
-            "database result could not be decoded safely"
-            if code == "RESULT_ENCODING_FAILED"
-            else "database connection configuration failed",
-            5 if code == "RESULT_ENCODING_FAILED" else 4,
-        ) from exc
+        if isinstance(exc, _ReadOnlySessionError):
+            raise RunnerError("CONNECTION_FAILED", str(exc), 4) from exc
+        if isinstance(exc, RunnerError):
+            raise exc
+        if isinstance(exc, (OSError, ssl.SSLError)):
+            code = "QUERY_FAILED" if failure.operation_started else "CONNECTION_FAILED"
+            raise RunnerError(
+                code,
+                "database query failed"
+                if code == "QUERY_FAILED"
+                else "database connection or TLS setup failed",
+                5 if code == "QUERY_FAILED" else 4,
+            ) from exc
+        if isinstance(exc, (UnicodeError, TypeError, ValueError)):
+            code = "RESULT_ENCODING_FAILED" if failure.operation_started else "CONNECTION_FAILED"
+            raise RunnerError(
+                code,
+                "database result could not be decoded safely"
+                if code == "RESULT_ENCODING_FAILED"
+                else "database connection configuration failed",
+                5 if code == "RESULT_ENCODING_FAILED" else 4,
+            ) from exc
+        raise exc
 
     return QueryResult(
         columns=columns,

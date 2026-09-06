@@ -1076,6 +1076,122 @@ class DbQueryCliTests(unittest.TestCase):
                 self.assertEqual(json.loads(result.stdout)["duration_ms"], duration)
                 self.assertEqual(events[-len(tail):], tail)
 
+    def test_query_session_failures_preserve_phase_and_cleanup(self):
+        preparation = [
+            "connect", "connection.enter", "cursor", "cursor.enter",
+            "set_read_only", "read_read_only", "fetch_read_only",
+        ]
+        operation = ["execute", "fetch_all", "cursor.exit", "connection.exit"]
+        for errno, query_code, query_message in (
+            (1064, "QUERY_FAILED", "database query failed"),
+            (2013, "QUERY_TIMEOUT", "database query timed out"),
+        ):
+            for failure in preparation + operation:
+                with self.subTest(errno=errno, failure=failure):
+                    result, events = self.run_session_command("query", fake_pymysql_module(
+                        failures={failure: f"MySQLError({errno}, 'secret readonly SELECT 1')"},
+                        sqlstate="HY000",
+                    ))
+                    if failure in preparation:
+                        exit_code, code, message = (
+                            4, "CONNECTION_FAILED",
+                            "database connection or read-only session setup failed",
+                        )
+                    else:
+                        exit_code, code, message = 5, query_code, query_message
+                    self.assertEqual(result.returncode, exit_code, result.stdout + result.stderr)
+                    self.assertEqual(json.loads(result.stdout)["error"], {
+                        "code": code, "message": message,
+                        "mysql_errno": errno, "sqlstate": "HY000",
+                    })
+                    lifecycle = preparation + operation
+                    expected = lifecycle[:lifecycle.index(failure) + 1]
+                    if failure not in ("connect", "connection.enter", "cursor", "cursor.enter",
+                                       "cursor.exit", "connection.exit"):
+                        expected.append("cursor.exit")
+                    if failure not in ("connect", "connection.enter", "connection.exit"):
+                        expected.append("connection.exit")
+                    self.assertEqual(events, expected)
+                    self.assertEqual(result.stderr, "")
+
+    def test_query_cleanup_error_keeps_the_original_operation_phase(self):
+        cases = (
+            ({"set_read_only": "MySQLError(1231, 'setup')",
+              "cursor.exit": "MySQLError(2013, 'close')"}, 4, "CONNECTION_FAILED", 2013),
+            ({"execute": "MySQLError(1064, 'operation')",
+              "cursor.exit": "MySQLError(2013, 'close')"}, 5, "QUERY_TIMEOUT", 2013),
+            ({"execute": "MySQLError(1064, 'operation')",
+              "cursor.exit": "MySQLError(2013, 'close')",
+              "connection.exit": "MySQLError(2006, 'close')"}, 5, "QUERY_FAILED", 2006),
+        )
+        for failures, exit_code, code, errno in cases:
+            with self.subTest(failures=failures):
+                result, events = self.run_session_command(
+                    "query", fake_pymysql_module(failures=failures),
+                )
+                self.assertEqual(result.returncode, exit_code, result.stdout + result.stderr)
+                error = json.loads(result.stdout)["error"]
+                self.assertEqual(error["code"], code)
+                self.assertEqual(error["mysql_errno"], errno)
+                self.assertEqual(events[-2:], ["cursor.exit", "connection.exit"])
+
+    def test_query_preserves_io_and_decoding_error_classification(self):
+        for error_type, operation_code, preparation_message, operation_message in (
+            ("OSError", "QUERY_FAILED", "database connection or TLS setup failed",
+             "database query failed"),
+            ("ssl.SSLError", "QUERY_FAILED", "database connection or TLS setup failed",
+             "database query failed"),
+            ("UnicodeError", "RESULT_ENCODING_FAILED", "database connection configuration failed",
+             "database result could not be decoded safely"),
+            ("TypeError", "RESULT_ENCODING_FAILED", "database connection configuration failed",
+             "database result could not be decoded safely"),
+            ("ValueError", "RESULT_ENCODING_FAILED", "database connection configuration failed",
+             "database result could not be decoded safely"),
+        ):
+            for event in ("connect", "set_read_only", "execute", "fetch_all", "connection.exit"):
+                with self.subTest(error_type=error_type, event=event):
+                    result, _ = self.run_session_command("query", fake_pymysql_module(
+                        failures={event: f"{error_type}('secret SELECT 1')"},
+                    ))
+                    if event in ("connect", "set_read_only"):
+                        exit_code, code, message = 4, "CONNECTION_FAILED", preparation_message
+                    else:
+                        exit_code, code, message = 5, operation_code, operation_message
+                    self.assertEqual(result.returncode, exit_code, result.stdout + result.stderr)
+                    self.assertEqual(json.loads(result.stdout)["error"], {
+                        "code": code, "message": message,
+                    })
+                    self.assertEqual(result.stderr, "")
+
+    def test_connection_check_redacts_io_errors_during_operation_and_cleanup(self):
+        for error_type in ("OSError", "ssl.SSLError"):
+            for event in ("connect", "read_tls", "connection.exit"):
+                with self.subTest(error_type=error_type, event=event):
+                    result, _ = self.run_session_command("validate", fake_pymysql_module(
+                        failures={event: f"{error_type}('failed for secret readonly')"},
+                    ))
+                    self.assertEqual(result.returncode, 4, result.stdout + result.stderr)
+                    error = json.loads(result.stdout)["error"]
+                    self.assertEqual(error["code"], "CONNECTION_FAILED")
+                    self.assertIn("failed for <REDACTED> <REDACTED>", error["message"])
+                    self.assertEqual(result.stderr, "")
+
+    def test_query_normalization_failure_happens_after_session_cleanup(self):
+        result, events = self.run_session_command("query", fake_pymysql_module(
+            rows_expression="[(InvalidDecimal('1'),)]",
+            module_setup="""
+                class InvalidDecimal(Decimal):
+                    def __str__(self):
+                        record('normalize')
+                        raise ValueError('cannot normalize fixture')
+            """,
+        ))
+        # Normalization is outside the session's decoding-error mapping.
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "")
+        self.assertTrue(result.stderr.endswith("ValueError: cannot normalize fixture\n"))
+        self.assertEqual(events[-3:], ["cursor.exit", "connection.exit", "normalize"])
+
     def test_supported_read_only_statements_reach_pymysql(self):
         config = """
             [profiles.test]

@@ -30,7 +30,7 @@ class MySQLError(Exception):
 
 class Cursor:
     def __init__(self) -> None:
-        self.description = None
+        self.description: list[tuple[object, ...]] | None = None
         self.last_event = ""
 
     def __enter__(self):
