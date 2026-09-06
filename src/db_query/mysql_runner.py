@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 import ssl
 import time
@@ -28,35 +30,60 @@ class _ReadOnlySessionError(RuntimeError):
     pass
 
 
+class _SessionFailure(Exception):
+    def __init__(self, error: Exception, operation_started: bool):
+        super().__init__("read-only session failed")
+        self.error = error
+        self.operation_started = operation_started
+
+
+@contextmanager
+def _read_only_session(profile: Profile, password: str) -> Iterator[Any]:
+    import pymysql
+
+    operation_started = False
+    try:
+        with pymysql.connect(**_connection_options(profile, password)) as connection:
+            with connection.cursor() as cursor:
+                _configure_read_only(cursor)
+                # Keep the operation phase through cursor and connection cleanup.
+                operation_started = True
+                yield cursor
+    except Exception as exc:
+        # Translate only after cleanup, so a cleanup error keeps its original precedence.
+        raise _SessionFailure(exc, operation_started) from exc
+
+
 def validate_connection(profile: Profile, password: str) -> ConnectionResult:
     import pymysql
 
     started = time.monotonic()
     try:
-        with pymysql.connect(**_connection_options(profile, password)) as connection:
-            with connection.cursor() as cursor:
-                _configure_read_only(cursor)
-                cursor.execute("SHOW SESSION STATUS LIKE 'Ssl_cipher'")
-                tls_status = cursor.fetchone()
-    except pymysql.MySQLError as exc:
-        raise RunnerError(
-            "CONNECTION_FAILED",
-            redact_connection_message(str(exc), profile, password),
-            4,
-            **_mysql_error_details(exc),
-        ) from exc
-    except _ReadOnlySessionError as exc:
-        raise RunnerError("CONNECTION_FAILED", str(exc), 4) from exc
-    except RunnerError:
-        raise
-    except (OSError, ssl.SSLError) as exc:
-        raise RunnerError(
-            "CONNECTION_FAILED",
-            redact_connection_message(
-                str(exc) or "TLS initialization failed", profile, password
-            ),
-            4,
-        ) from exc
+        with _read_only_session(profile, password) as cursor:
+            cursor.execute("SHOW SESSION STATUS LIKE 'Ssl_cipher'")
+            tls_status = cursor.fetchone()
+    except _SessionFailure as failure:
+        exc = failure.error
+        if isinstance(exc, pymysql.MySQLError):
+            raise RunnerError(
+                "CONNECTION_FAILED",
+                redact_connection_message(str(exc), profile, password),
+                4,
+                **_mysql_error_details(exc),
+            ) from exc
+        if isinstance(exc, _ReadOnlySessionError):
+            raise RunnerError("CONNECTION_FAILED", str(exc), 4) from exc
+        if isinstance(exc, RunnerError):
+            raise exc
+        if isinstance(exc, (OSError, ssl.SSLError)):
+            raise RunnerError(
+                "CONNECTION_FAILED",
+                redact_connection_message(
+                    str(exc) or "TLS initialization failed", profile, password
+                ),
+                4,
+            ) from exc
+        raise exc
     tls_active = bool(tls_status and len(tls_status) > 1 and tls_status[1])
     return ConnectionResult(
         duration_ms=round((time.monotonic() - started) * 1000),

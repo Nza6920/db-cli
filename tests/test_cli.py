@@ -21,133 +21,28 @@ def fake_pymysql_module(
     error_args: tuple[object, ...] | None = None,
     sqlstate: str | None = None,
     module_setup: str = "",
-) -> str:
-    setup = textwrap.dedent(module_setup).strip()
-    checks = textwrap.indent(textwrap.dedent(assertions).strip(), "    ")
-    failure = ""
-    if error_args is not None:
-        failure = textwrap.indent(
-            f"exc = MySQLError(*{error_args!r})\n"
-            f"exc.sqlstate = {sqlstate!r}\n"
-            "raise exc",
-            "    ",
-        )
-    connect_body = "\n".join(part for part in (failure, checks, "    return Connection()") if part)
-    return f"""
-import ssl
-
-class MySQLError(Exception):
-    sqlstate = None
-
-class Cursor:
-    def __init__(self):
-        self.statements = []
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *args):
-        expected = [
-            "SET SESSION TRANSACTION READ ONLY",
-            "SELECT @@SESSION.transaction_read_only",
-        ]
-        if {read_only_value} == 1:
-            expected.append("SHOW SESSION STATUS LIKE 'Ssl_cipher'")
-        if self.statements != expected:
-            raise AssertionError(self.statements)
-
-    def execute(self, sql):
-        self.statements.append(sql)
-
-    def fetchone(self):
-        if self.statements[-1] == "SELECT @@SESSION.transaction_read_only":
-            return ({read_only_value},)
-        return ("Ssl_cipher", {tls_cipher!r})
-
-class Connection:
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *args):
-        return None
-
-    def cursor(self):
-        return Cursor()
-
-{setup}
-
-def connect(**kwargs):
-{connect_body}
-"""
-
-
-def fake_pymysql_query_module(
-    *,
     columns: tuple[str, ...] = ("id",),
     rows_expression: str = "[(1,)]",
-    assertions: str = "",
     expected_sql: str | None = None,
-    error_args: tuple[object, ...] | None = None,
-    sqlstate: str | None = None,
+    error_at: str = "connect",
+    failures: dict[str, str] | None = None,
 ) -> str:
-    checks = textwrap.indent(textwrap.dedent(assertions).strip(), "    ")
-    failure = ""
+    injected_failures = dict(failures or {})
     if error_args is not None:
-        failure = textwrap.indent(
-            f"exc = MySQLError(*{error_args!r})\n"
-            f"exc.sqlstate = {sqlstate!r}\n"
-            "raise exc",
-            "            ",
-        )
-    return f"""
-import datetime
-from decimal import Decimal
-
-class MySQLError(Exception):
-    sqlstate = None
-
-class Cursor:
-    def __init__(self):
-        self.statements = []
-        self.description = None
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *args):
-        return None
-
-    def execute(self, sql):
-        self.statements.append(sql)
-        if sql not in (
-            "SET SESSION TRANSACTION READ ONLY",
-            "SELECT @@SESSION.transaction_read_only",
-        ):
-            if sql != {expected_sql!r} and {expected_sql is not None!r}:
-                raise AssertionError(sql)
-{failure or '            pass'}
-            self.description = [(name, None, None, None, None, None, None) for name in {columns!r}]
-
-    def fetchone(self):
-        return (1,)
-
-    def fetchall(self):
-        return {rows_expression}
-
-class Connection:
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *args):
-        return None
-
-    def cursor(self):
-        return Cursor()
-
-def connect(**kwargs):
-{checks or '    pass'}
-    return Connection()
-"""
+        injected_failures[error_at] = f"MySQLError(*{error_args!r})"
+    settings = {
+        "assertions": textwrap.dedent(assertions),
+        "module_setup": textwrap.dedent(module_setup),
+        "read_only_value": read_only_value,
+        "tls_cipher": tls_cipher,
+        "columns": columns,
+        "rows_expression": rows_expression,
+        "expected_sql": expected_sql,
+        "sqlstate": sqlstate,
+        "failures": injected_failures,
+    }
+    source = Path(__file__).with_name("pymysql_stub.py").read_text(encoding="utf-8")
+    return source + f"\nconfigure({settings!r})\n"
 
 
 class DbQueryCliTests(unittest.TestCase):
@@ -158,6 +53,7 @@ class DbQueryCliTests(unittest.TestCase):
         extra_env: dict[str, str] | None = None,
         fake_pymysql: str | None = None,
         stdin: str | None = None,
+        driver_events: list[str] | None = None,
     ):
         with tempfile.TemporaryDirectory() as temp_dir:
             config_path = Path(temp_dir) / "config.toml"
@@ -168,6 +64,8 @@ class DbQueryCliTests(unittest.TestCase):
             env["DB_QUERY_CONFIG"] = str(config_path)
             if extra_env:
                 env.update(extra_env)
+            event_path = Path(temp_dir) / "driver-events.txt"
+            env["DB_QUERY_DRIVER_EVENTS"] = str(event_path)
             if fake_pymysql is not None:
                 pymysql_dir = Path(temp_dir) / "pymysql"
                 pymysql_dir.mkdir()
@@ -176,7 +74,7 @@ class DbQueryCliTests(unittest.TestCase):
                     encoding="utf-8",
                 )
                 env["PYTHONPATH"] = f"{temp_dir}{os.pathsep}{env['PYTHONPATH']}"
-            return subprocess.run(
+            result = subprocess.run(
                 [sys.executable, "-m", "db_query", *args],
                 cwd=PROJECT_ROOT,
                 env=env,
@@ -185,6 +83,27 @@ class DbQueryCliTests(unittest.TestCase):
                 capture_output=True,
                 check=False,
             )
+            if driver_events is not None and event_path.exists():
+                driver_events.extend(event_path.read_text(encoding="utf-8").splitlines())
+            return result
+
+    def run_session_command(self, command: str, driver: str):
+        config = """
+            [profiles.test]
+            url = "mysql://db.example/"
+            username = "readonly"
+            password_env = "DB_QUERY_TEST_PASSWORD"
+            environment = "test"
+        """
+        args = ("--connect",) if command == "validate" else ("--sql", "SELECT 1")
+        events: list[str] = []
+        result = self.run_cli(
+            config, command, "--profile", "test", *args,
+            extra_env={"DB_QUERY_TEST_PASSWORD": "secret"},
+            fake_pymysql=driver,
+            driver_events=events,
+        )
+        return result, events
 
     def check_guarded_query(self, sql: str, code: str | None = None, max_rows: int | None = None):
         config = """
@@ -201,7 +120,7 @@ class DbQueryCliTests(unittest.TestCase):
             extra_env={"DB_QUERY_TEST_PASSWORD": "secret"},
             fake_pymysql=(
                 "raise AssertionError('database must not be called')"
-                if code else fake_pymysql_query_module(expected_sql=sql)
+                if code else fake_pymysql_module(expected_sql=sql)
             ),
         )
         self.assertEqual(result.returncode, 2 if code else 0, result.stdout + result.stderr)
@@ -365,7 +284,7 @@ class DbQueryCliTests(unittest.TestCase):
                     extra_env={"DB_QUERY_TEST_PASSWORD": "secret"},
                     fake_pymysql=(
                         "raise AssertionError('database must not be called')"
-                        if code else fake_pymysql_query_module(expected_sql=sql)
+                        if code else fake_pymysql_module(expected_sql=sql)
                     ),
                 )
                 self.assertEqual(result.returncode, 2 if code else 0, result.stdout + result.stderr)
@@ -520,7 +439,7 @@ class DbQueryCliTests(unittest.TestCase):
             "--sql",
             "SELECT 1 AS id",
             extra_env={"DB_QUERY_TEST_PASSWORD": "secret"},
-            fake_pymysql=fake_pymysql_query_module(
+            fake_pymysql=fake_pymysql_module(
                 columns=(
                     "integer_value",
                     "boolean_alias",
@@ -584,7 +503,7 @@ class DbQueryCliTests(unittest.TestCase):
             "--sql",
             "SELECT 1 AS duplicated, 2 AS duplicated",
             extra_env={"DB_QUERY_TEST_PASSWORD": "secret"},
-            fake_pymysql=fake_pymysql_query_module(
+            fake_pymysql=fake_pymysql_module(
                 columns=("duplicated", "duplicated"),
                 rows_expression="[(1, 2)]",
             ),
@@ -612,8 +531,9 @@ class DbQueryCliTests(unittest.TestCase):
             "--sql",
             sql,
             extra_env={"DB_QUERY_TEST_PASSWORD": "secret-password"},
-            fake_pymysql=fake_pymysql_query_module(
+            fake_pymysql=fake_pymysql_module(
                 error_args=(1064, f"syntax error near {sql} for secret-password"),
+                error_at="execute",
                 sqlstate="42000",
             ),
         )
@@ -625,7 +545,7 @@ class DbQueryCliTests(unittest.TestCase):
             "--sql",
             sql,
             extra_env={"DB_QUERY_TEST_PASSWORD": "secret-password"},
-            fake_pymysql=fake_pymysql_query_module(rows_expression="[(object(),)]"),
+            fake_pymysql=fake_pymysql_module(rows_expression="[(object(),)]"),
         )
 
         self.assertEqual(query_failure.returncode, 5)
@@ -669,7 +589,7 @@ class DbQueryCliTests(unittest.TestCase):
             "--stdin",
             extra_env={"DB_QUERY_TEST_PASSWORD": password},
             stdin=sql,
-            fake_pymysql=fake_pymysql_query_module(
+            fake_pymysql=fake_pymysql_module(
                 columns=("id", "name"),
                 rows_expression='[(1, "alice"), (2, "bob")]',
                 expected_sql=sql,
@@ -740,7 +660,7 @@ class DbQueryCliTests(unittest.TestCase):
             "--sql",
             "SELECT * FROM app.users LIMIT 1",
             extra_env={"DB_QUERY_TEST_PASSWORD": "secret"},
-            fake_pymysql=fake_pymysql_query_module(
+            fake_pymysql=fake_pymysql_module(
                 assertions="""
                     expected = {
                         "connect_timeout": 9,
@@ -772,7 +692,7 @@ class DbQueryCliTests(unittest.TestCase):
             "--sql",
             "SELECT * FROM `report data`.users LIMIT 1",
             extra_env={"DB_QUERY_TEST_PASSWORD": "p@ss/word"},
-            fake_pymysql=fake_pymysql_query_module(
+            fake_pymysql=fake_pymysql_module(
                 assertions="""
                     import os
                     expected = {
@@ -1005,6 +925,157 @@ class DbQueryCliTests(unittest.TestCase):
         self.assertEqual(payload["error"]["code"], "CONNECTION_FAILED")
         self.assertIn("read-only", payload["error"]["message"])
 
+    def test_read_only_session_failure_prevents_both_operations(self):
+        config = """
+            [profiles.test]
+            url = "mysql://db.example/"
+            username = "readonly"
+            password_env = "DB_QUERY_TEST_PASSWORD"
+            environment = "test"
+        """
+        for command in (
+            ("validate", "--profile", "test", "--connect"),
+            ("query", "--profile", "test", "--sql", "SELECT 1"),
+        ):
+            for event in ("set_read_only", "read_read_only", "fetch_read_only", None):
+                with self.subTest(command=command[0], failure=event):
+                    events: list[str] = []
+                    result = self.run_cli(
+                        config, *command,
+                        extra_env={"DB_QUERY_TEST_PASSWORD": "secret"},
+                        fake_pymysql=fake_pymysql_module(
+                            read_only_value=0,
+                            failures={event: "MySQLError(1231, 'setup failed')"} if event else {},
+                        ),
+                        driver_events=events,
+                    )
+                    self.assertEqual(result.returncode, 4, result.stdout + result.stderr)
+                    self.assertEqual(json.loads(result.stdout)["error"]["code"], "CONNECTION_FAILED")
+                    self.assertNotIn("execute", events)
+                    self.assertNotIn("read_tls", events)
+                    self.assertEqual(events[-2:], ["cursor.exit", "connection.exit"])
+
+    def test_read_only_session_is_verified_before_both_operations(self):
+        for command, operation, fetch in (
+            ("validate", "read_tls", "fetch_tls"),
+            ("query", "execute", "fetch_all"),
+        ):
+            with self.subTest(command=command):
+                result, events = self.run_session_command(command, fake_pymysql_module())
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(events, [
+                    "connect", "connection.enter", "cursor", "cursor.enter",
+                    "set_read_only", "read_read_only", "fetch_read_only",
+                    operation, fetch, "cursor.exit", "connection.exit",
+                ])
+
+    def test_connection_check_failure_closes_entered_resources(self):
+        acquisition = ["connect", "connection.enter", "cursor", "cursor.enter"]
+        setup = ["set_read_only", "read_read_only", "fetch_read_only"]
+        operation = ["read_tls", "fetch_tls"]
+        for index, failure in enumerate(acquisition + setup + operation):
+            with self.subTest(failure=failure):
+                result, events = self.run_session_command("validate", fake_pymysql_module(
+                    failures={failure: "MySQLError(1231, 'failed for secret')"},
+                    sqlstate="HY000",
+                ))
+                self.assertEqual(result.returncode, 4, result.stdout + result.stderr)
+                error = json.loads(result.stdout)["error"]
+                self.assertEqual(error, {
+                    "code": "CONNECTION_FAILED", "message": "(1231, 'failed for <REDACTED>')",
+                    "mysql_errno": 1231, "sqlstate": "HY000",
+                })
+                expected = (acquisition + setup + operation)[:index + 1]
+                if index >= 4:
+                    expected += ["cursor.exit"]
+                if index >= 2:
+                    expected += ["connection.exit"]
+                self.assertEqual(events, expected)
+                self.assertNotIn("secret", result.stdout + result.stderr)
+
+    def test_connection_check_cleanup_preserves_last_error(self):
+        cases = (
+            ({"cursor.exit": "MySQLError(2013, 'cursor close')"}, 2013),
+            ({"connection.exit": "MySQLError(2006, 'connection close')"}, 2006),
+            ({"read_tls": "MySQLError(1064, 'operation')",
+              "cursor.exit": "MySQLError(2013, 'cursor close')"}, 2013),
+            ({"read_tls": "MySQLError(1064, 'operation')",
+              "cursor.exit": "MySQLError(2013, 'cursor close')",
+              "connection.exit": "MySQLError(2006, 'connection close')"}, 2006),
+        )
+        for failures, errno in cases:
+            with self.subTest(failures=failures):
+                result, events = self.run_session_command(
+                    "validate", fake_pymysql_module(failures=failures),
+                )
+                self.assertEqual(result.returncode, 4, result.stdout + result.stderr)
+                error = json.loads(result.stdout)["error"]
+                self.assertEqual(error["code"], "CONNECTION_FAILED")
+                self.assertEqual(error["mysql_errno"], errno)
+                self.assertEqual(events[-2:], ["cursor.exit", "connection.exit"])
+
+    def test_connection_check_keeps_uncaught_error_types(self):
+        for error_type in ("ValueError", "TypeError", "UnicodeError"):
+            for event in ("connect", "set_read_only", "read_tls", "connection.exit"):
+                with self.subTest(error_type=error_type, event=event):
+                    result, _ = self.run_session_command("validate", fake_pymysql_module(
+                        failures={event: f"{error_type}('unhandled driver error')"},
+                    ))
+                    self.assertEqual(result.returncode, 1)
+                    self.assertEqual(result.stdout, "")
+                    self.assertTrue(result.stderr.endswith(f"{error_type}: unhandled driver error\n"))
+
+    def test_read_only_session_duration_includes_cleanup_and_normalization(self):
+        driver = fake_pymysql_module(
+            rows_expression="[(TimedDecimal('1.25'),)]",
+            module_setup="""
+                import json
+                import time
+
+                clock = 0.0
+                time.monotonic = lambda: clock
+                original_context = ssl.create_default_context
+                original_record = record
+                original_dumps = json.dumps
+
+                def timed_context():
+                    global clock
+                    clock += 0.125
+                    return original_context()
+
+                ssl.create_default_context = timed_context
+
+                def record(event):
+                    global clock
+                    clock += {
+                        'connect': 0.25, 'set_read_only': 0.5, 'fetch_read_only': 1,
+                        'execute': 2, 'read_tls': 2, 'cursor.exit': 4,
+                        'connection.exit': 8, 'normalize': 16, 'render': 32,
+                    }.get(event, 0)
+                    original_record(event)
+
+                class TimedDecimal(Decimal):
+                    def __str__(self):
+                        record('normalize')
+                        return super().__str__()
+
+                def timed_dumps(*args, **kwargs):
+                    record('render')
+                    return original_dumps(*args, **kwargs)
+
+                json.dumps = timed_dumps
+            """,
+        )
+        for command, duration, tail in (
+            ("validate", 15875, ["connection.exit", "render"]),
+            ("query", 31875, ["connection.exit", "normalize", "render"]),
+        ):
+            with self.subTest(command=command):
+                result, events = self.run_session_command(command, driver)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(json.loads(result.stdout)["duration_ms"], duration)
+                self.assertEqual(events[-len(tail):], tail)
+
     def test_supported_read_only_statements_reach_pymysql(self):
         config = """
             [profiles.test]
@@ -1032,7 +1103,7 @@ class DbQueryCliTests(unittest.TestCase):
                     "test",
                     "--stdin",
                     extra_env={"DB_QUERY_TEST_PASSWORD": "secret"},
-                    fake_pymysql=fake_pymysql_query_module(expected_sql=sql),
+                    fake_pymysql=fake_pymysql_module(expected_sql=sql),
                     stdin=sql,
                 )
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -1151,7 +1222,7 @@ class DbQueryCliTests(unittest.TestCase):
             "--sql",
             "SELECT * FROM app.users LIMIT 1",
             extra_env={"DB_QUERY_TEST_PASSWORD": "secret", "PATH": "/path/that/does/not/exist"},
-            fake_pymysql=fake_pymysql_query_module(),
+            fake_pymysql=fake_pymysql_module(),
         )
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -1176,8 +1247,9 @@ class DbQueryCliTests(unittest.TestCase):
                 "DB_QUERY_TEST_PASSWORD": "secret",
                 "PATH": "/path/that/does/not/exist",
             },
-            fake_pymysql=fake_pymysql_query_module(
+            fake_pymysql=fake_pymysql_module(
                 error_args=(2013, "Lost connection during query (timed out)"),
+                error_at="execute",
                 sqlstate="HY000",
             ),
         )
@@ -1208,7 +1280,7 @@ class DbQueryCliTests(unittest.TestCase):
                 "DB_QUERY_TEST_PASSWORD": "secret",
                 "PATH": "/path/that/does/not/exist",
             },
-            fake_pymysql=fake_pymysql_query_module(
+            fake_pymysql=fake_pymysql_module(
                 columns=(
                     "text_value",
                     "empty_value",
@@ -1256,7 +1328,7 @@ class DbQueryCliTests(unittest.TestCase):
                 "DB_QUERY_TEST_PASSWORD": "secret",
                 "PATH": "/path/that/does/not/exist",
             },
-            fake_pymysql=fake_pymysql_query_module(
+            fake_pymysql=fake_pymysql_module(
                 columns=(
                     "code",
                     "decimal_value",
