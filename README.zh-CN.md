@@ -2,7 +2,7 @@
 
 [English](README.md) | 简体中文
 
-`db-cli` 提供支持 profile 的只读 MySQL 命令 `db-query`。0.2.1 版本通过固定
+`db-cli` 提供支持 profile 的只读 MySQL 命令 `db-query`。0.3.0 版本通过固定
 版本的 Python 依赖直接连接数据库，因此正常的 pipx 安装不再需要单独的 SQL
 客户端。它接受 MySQL 和 JDBC MySQL URL，并避免将密码写入持久化配置。
 
@@ -32,7 +32,7 @@
 一起安装，不需要 `usql`。
 
 ```bash
-pipx install "git+https://github.com/Nza6920/db-cli.git@v0.2.1"
+pipx install "git+https://github.com/Nza6920/db-cli.git@v0.3.0"
 db-query --help
 ```
 
@@ -45,6 +45,7 @@ db-query --help
 | v0.1.2 | usql 0.21.4 | 需要单独安装 `usql` |
 | v0.2.0 | PyMySQL 1.2.0、tabulate 0.10.0 | 无 |
 | v0.2.1 | PyMySQL 1.2.0、tabulate 0.10.0 | 无 |
+| v0.3.0 | PyMySQL 1.2.0、tabulate 0.10.0 | 无 |
 
 如需回滚 Windows 配置路径变更，请安装 v0.2.0：
 
