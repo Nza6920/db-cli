@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+from contextlib import redirect_stderr
+from importlib.metadata import PackageNotFoundError
+from io import StringIO
 import os
 from pathlib import Path
 import subprocess
@@ -8,9 +11,13 @@ import sys
 import tempfile
 import textwrap
 import unittest
+from unittest.mock import patch
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
+
+from db_query.cli import main  # noqa: E402
 
 
 def fake_pymysql_module(
@@ -54,6 +61,7 @@ class DbQueryCliTests(unittest.TestCase):
         fake_pymysql: str | None = None,
         stdin: str | None = None,
         driver_events: list[str] | None = None,
+        distribution_version: str | None = None,
     ):
         with tempfile.TemporaryDirectory() as temp_dir:
             config_path = Path(temp_dir) / "config.toml"
@@ -66,6 +74,14 @@ class DbQueryCliTests(unittest.TestCase):
                 env.update(extra_env)
             event_path = Path(temp_dir) / "driver-events.txt"
             env["DB_QUERY_DRIVER_EVENTS"] = str(event_path)
+            if distribution_version is not None:
+                metadata_dir = Path(temp_dir) / "db_query.dist-info"
+                metadata_dir.mkdir()
+                (metadata_dir / "METADATA").write_text(
+                    f"Metadata-Version: 2.1\nName: db-query\nVersion: {distribution_version}\n",
+                    encoding="utf-8",
+                )
+                env["PYTHONPATH"] = f"{temp_dir}{os.pathsep}{env['PYTHONPATH']}"
             if fake_pymysql is not None:
                 pymysql_dir = Path(temp_dir) / "pymysql"
                 pymysql_dir.mkdir()
@@ -86,6 +102,34 @@ class DbQueryCliTests(unittest.TestCase):
             if driver_events is not None and event_path.exists():
                 driver_events.extend(event_path.read_text(encoding="utf-8").splitlines())
             return result
+
+    def test_version_reports_installed_distribution_without_loading_config(self) -> None:
+        result = self.run_cli(
+            "not valid TOML",
+            "--version",
+            distribution_version="0.3.1",
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "db-query 0.3.1")
+        self.assertEqual(result.stderr, "")
+
+    def test_help_describes_version_option(self) -> None:
+        result = self.run_cli("not valid TOML", "--help")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--version", result.stdout)
+
+    def test_version_reports_actionable_error_without_distribution_metadata(self) -> None:
+        stderr = StringIO()
+        with patch(
+            "db_query.cli.version",
+            side_effect=PackageNotFoundError("db-query"),
+        ), redirect_stderr(stderr), self.assertRaises(SystemExit) as raised:
+            main(["--version"])
+
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("install db-query", stderr.getvalue())
 
     def run_session_command(self, command: str, driver: str):
         config = """

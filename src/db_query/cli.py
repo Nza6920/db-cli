@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Sequence
+from importlib.metadata import PackageNotFoundError, version
 import json
 import os
 import sys
+from typing import Any
 
 from db_query.config import Config, ConfigError, config_path, load_config, profile_warnings
 from db_query.errors import RunnerError
@@ -12,8 +15,30 @@ from db_query.output_formatting import render_csv, render_table
 from db_query.sql_safety import SqlSafetyError, validate_read_only
 
 
+class _InstalledVersionAction(argparse.Action):
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: str | Sequence[Any] | None,
+        option_string: str | None = None,
+    ) -> None:
+        try:
+            installed_version = version("db-query")
+        except PackageNotFoundError:
+            parser.error("distribution metadata is unavailable; install db-query")
+        print(f"{parser.prog} {installed_version}")
+        parser.exit()
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="db-query")
+    parser.add_argument(
+        "--version",
+        action=_InstalledVersionAction,
+        nargs=0,
+        help="show program's version number and exit",
+    )
     parser.add_argument("--config", help="path to config.toml")
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("profiles", help="list configured profiles safely")
