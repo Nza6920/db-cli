@@ -83,5 +83,7 @@ class Connection:
 
 def connect(**kwargs):
     record("connect")
-    exec(scenario["assertions"], globals(), {"kwargs": kwargs})
+    assertion_scope = globals().copy()
+    assertion_scope["kwargs"] = kwargs
+    exec(scenario["assertions"], assertion_scope, assertion_scope)
     return Connection()
