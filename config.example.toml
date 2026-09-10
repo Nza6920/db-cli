@@ -1,5 +1,5 @@
 [profiles.prod]
-url = "jdbc:mysql://jms.newchiwan.cn:33061/"
+url = "jdbc:mysql://jms.example.cn:33061/"
 username = "readonly_user"
 password_env = "DB_QUERY_PROD_PASSWORD"
 environment = "production"
