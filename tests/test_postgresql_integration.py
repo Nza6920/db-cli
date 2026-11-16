@@ -1,6 +1,8 @@
 """CLI acceptance against disposable PostgreSQL 16/17/18 with a private CA."""
 from __future__ import annotations
 
+import csv
+import io
 import json
 import os
 from pathlib import Path
@@ -142,6 +144,59 @@ class PostgreSqlIntegrationMixin:
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)  # type: ignore[attr-defined]
             self.assertEqual(json.loads(result.stdout)["row_count"], count)  # type: ignore[attr-defined]
 
+
+    def test_native_postgresql_types_in_json_csv_and_table(self):
+        sql = """SELECT true AS yes, false AS no,
+            TIMESTAMPTZ '2026-01-02 03:04:05+00' AS dt,
+            TIMETZ '03:04:05+05:30' AS t,
+            '12345678-1234-5678-1234-567812345678'::uuid AS id,
+            '{"nested":[true,null,{"text":"消息"}]}'::json AS obj,
+            '{"items":[1,null,[false]]}'::jsonb AS doc,
+            ARRAY[[1,NULL],[2,3]] AS matrix,
+            ARRAY[12.30,NULL,0.10]::numeric[] AS numbers,
+            ARRAY['12345678-1234-5678-1234-567812345678'::uuid,NULL] AS ids,
+            ARRAY[TIMETZ '03:04:05+05:30',NULL] AS times,
+            NULL::text AS sql_null, 'null'::json AS json_null,
+            DATE '2026-01-02' AS day, TIME '03:04:05.123456' AS naive_time,
+            12.30::numeric AS precise, decode('00ff','hex') AS binary"""
+        expected = {
+            'yes': True, 'no': False, 'dt': '2026-01-02T03:04:05+00:00',
+            't': '03:04:05+05:30', 'id': '12345678-1234-5678-1234-567812345678',
+            'obj': {'nested': [True, None, {'text': '消息'}]},
+            'doc': {'items': [1, None, [False]]}, 'matrix': [[1, None], [2, 3]],
+            'numbers': ['12.30', None, '0.10'],
+            'ids': ['12345678-1234-5678-1234-567812345678', None],
+            'times': ['03:04:05+05:30', None], 'sql_null': None, 'json_null': None,
+            'day': '2026-01-02', 'naive_time': '03:04:05.123456',
+            'precise': '12.30', 'binary': '0x00ff'}
+        for output in ('json', 'csv', 'table'):
+            with self.subTest(output=output):  # type: ignore[attr-defined]
+                result = self.run_validate(query=sql, output=output)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)  # type: ignore[attr-defined]
+                if output == 'json':
+                    self.assertEqual(json.loads(result.stdout)['rows'], [expected])  # type: ignore[attr-defined]
+                elif output == 'csv':
+                    row = next(csv.DictReader(io.StringIO(result.stdout)))
+                    self.assertEqual(row['obj'], '{"nested":[true,null,{"text":"消息"}]}')  # type: ignore[attr-defined]
+                    self.assertEqual(row['numbers'], '["12.30",null,"0.10"]')  # type: ignore[attr-defined]
+                    self.assertEqual(row['json_null'], r'\N')  # type: ignore[attr-defined]
+                    self.assertEqual(row['t'], '03:04:05+05:30')  # type: ignore[attr-defined]
+                else:
+                    self.assertIn('{"items":[1,null,[false]]}', result.stdout)  # type: ignore[attr-defined]
+                    self.assertIn('[[1,null],[2,3]]', result.stdout)  # type: ignore[attr-defined]
+                    self.assertIn('03:04:05+05:30', result.stdout)  # type: ignore[attr-defined]
+
+    def test_postgresql_empty_and_duplicate_type_results(self):
+        for output in ('json', 'csv', 'table'):
+            result = self.run_validate(query="SELECT true AS flag, '{}'::json AS obj WHERE false",
+                                       output=output)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)  # type: ignore[attr-defined]
+            if output == 'json':
+                self.assertEqual(json.loads(result.stdout)['rows'], [])  # type: ignore[attr-defined]
+            result = self.run_validate(query='SELECT true AS repeated, false AS repeated',
+                                       output=output)
+            self.assertEqual(result.returncode, 5, result.stdout + result.stderr)  # type: ignore[attr-defined]
+            self.assertEqual(json.loads(result.stdout)['error']['code'], 'RESULT_ENCODING_FAILED')  # type: ignore[attr-defined]
 
     def test_trusted_ca_and_hostname_establish_verified_read_only_session(self):
         result = self.run_validate()

@@ -10,7 +10,7 @@ from typing import Any
 from db_query.config import Profile
 from db_query.errors import RunnerError
 from db_query.mysql_runner import ConnectionResult, QueryResult
-from db_query.result_encoding import normalize_rows
+from db_query.result_encoding import normalize_postgresql_rows
 
 
 def _driver() -> Any:
@@ -98,8 +98,5 @@ def run_query(profile: Profile, password: str, sql: str) -> QueryResult:
                               **({"sqlstate": state} if state else {})) from exc
         except (UnicodeError, TypeError, ValueError) as exc:
             raise RunnerError("RESULT_ENCODING_FAILED", "database result could not be decoded safely", 5) from exc
-    # Reject PostgreSQL booleans explicitly until native PG encoding lands.
-    if any(isinstance(value, bool) for row in raw_rows for value in row):
-        raise RunnerError("RESULT_ENCODING_FAILED", "PostgreSQL boolean results are not supported yet", 5)
-    return QueryResult(columns, normalize_rows(columns, raw_rows),
+    return QueryResult(columns, normalize_postgresql_rows(columns, raw_rows),
                        round((time.monotonic() - started) * 1000))

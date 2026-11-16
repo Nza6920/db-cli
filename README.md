@@ -164,8 +164,12 @@ user-defined function side effects still depend on database privileges.
 
 Integer, text, Decimal, naive date/time, binary and NULL results use the existing
 JSON/CSV/table envelopes and representations; duplicate columns are rejected.
-PostgreSQL-specific booleans, timezone-aware values, UUIDs, JSON and arrays report
-`RESULT_ENCODING_FAILED` until native type support is added.
+PostgreSQL booleans remain JSON booleans, timezone-aware datetime/time values use
+ISO 8601 strings with offsets, and UUIDs become strings. JSON/JSONB and arrays
+retain objects/arrays, including nested values; array elements use the same
+scalar rules. SQL NULL and JSON null both become JSON null without type wrappers.
+CSV/table render objects and arrays as compact JSON text. Unsupported values or
+object keys that are not strings fail with `RESULT_ENCODING_FAILED`.
 
 PostgreSQL TLS `required` uses certificate and hostname verification (`verify-full`)
 with system trust by default, or `tls_ca_file` for a private CA. `preferred` requests
@@ -214,8 +218,8 @@ uses a SQL-style `psql` layout, renders null as `NULL`, and disables numeric
 parsing so leading-zero and precision-preserving strings stay unchanged.
 
 Across all formats, Decimal values are strings; integers and MySQL boolean
-aliases remain JSON numbers; dates use `YYYY-MM-DD`; datetimes use timezone-free
-ISO 8601; signed MySQL times retain their sign and microseconds; and binary data
+aliases remain JSON numbers; dates use `YYYY-MM-DD`; naive datetimes use
+timezone-free ISO 8601; signed MySQL times retain their sign and microseconds; and binary data
 uses reversible lowercase `0x`-prefixed hexadecimal. Duplicate result column
 names fail with `RESULT_ENCODING_FAILED`; provide unique SQL aliases. There is
 no total output-byte limit, so avoid selecting large binary fields even though

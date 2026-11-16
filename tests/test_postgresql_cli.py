@@ -145,7 +145,7 @@ class PostgreSqlCliTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(json.loads(result.stdout)["rows"], [{"n": None, "d": "12.30",
                          "t": "2026-01-02T03:04:05", "b": "0x00ff"}])
-        for values, columns in (("[(True,)]", "['v']"), ("[({},)]", "['v']"),
+        for values, columns in (("[(object(),)]", "['v']"),
                                 ("[(1,2)]", "['v','v']")):
             result = self.run_cli("query", "--profile", "local", "--sql", sql,
                                   stub=query_stub(sql, values, columns))

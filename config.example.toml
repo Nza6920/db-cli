@@ -20,6 +20,7 @@ tls = "required"
 # Each profile can choose its own cap; SQL still needs an explicit LIMIT.
 max_rows = 2000
 
+# PostgreSQL returns native boolean/JSON/arrays; CSV/table use compact JSON text.
 [profiles.pg]
 driver = "postgresql"
 # PostgreSQL requires a database; single TCP host only, default port 5432.

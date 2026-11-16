@@ -147,8 +147,11 @@ production 精确 profile 确认。
 schema 限定的函数调用。任意自定义函数的副作用仍需数据库权限约束。
 
 整数、文本、Decimal、无时区日期/时间、二进制和 NULL 沿用现有 JSON/CSV/table
-格式与 envelope，拒绝重复列名。PostgreSQL 特有布尔、带时区时间、UUID、JSON
-和数组在后续类型支持前明确返回 `RESULT_ENCODING_FAILED`。
+格式与 envelope，拒绝重复列名。PostgreSQL 布尔值保留为 JSON boolean，带时区
+的 datetime/time 使用含偏移的 ISO 8601 字符串，UUID 为字符串。JSON/JSONB
+和数组保留对象/数组及嵌套结构，数组元素遵循相同标量规则。SQL NULL 与 JSON
+null 均为 JSON null，不增加类型包装。CSV/table 将对象和数组显示为紧凑 JSON
+文本。不可表示的值及非字符串对象键返回 `RESULT_ENCODING_FAILED`。
 
 PostgreSQL 的 TLS `required` 使用 `verify-full` 验证证书及主机名，默认使用系统
 信任根，私有 CA 使用 `tls_ca_file`。`preferred` 优先 TLS，可回退明文，不验证
@@ -193,7 +196,7 @@ count 和 rows。`--format csv` 使用标准 CSV quoting，以 `\N` 表示 null�
 `NULL` 表示 null，并关闭数字解析，从而保留前导零和高精度数字字符串。
 
 所有格式使用同一套标量语义：Decimal 为字符串；整数和 MySQL boolean alias
-保持 JSON number；date 为 `YYYY-MM-DD`；datetime 为不带时区的 ISO 8601；
+保持 JSON number；date 为 `YYYY-MM-DD`；无时区 datetime 为 ISO 8601；
 带符号的 MySQL time 保留符号和微秒；binary 使用可逆的小写 `0x` 前缀十六
 进制。重复结果列名会返回 `RESULT_ENCODING_FAILED`，调用方需要提供唯一 SQL
 alias。工具没有总输出字节上限，因此即使明细行数受限，也应避免选择大型
