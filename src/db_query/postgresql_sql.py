@@ -166,17 +166,125 @@ def validate_postgresql(sql: str, max_rows: int = 1000) -> None:
         tokens = tokens[:-1]
     if not tokens:
         raise SqlSafetyError("SQL_EMPTY", "SQL is empty")
-    validate_select(tokens, max_rows)
+    validate_statement(tokens, max_rows)
+
+
+def normalized(tokens: list[PgToken]) -> list[PgToken]:
+    if not tokens:
+        raise invalid("missing query")
+    return [replace(t, depth=t.depth - tokens[0].depth) for t in tokens]
+
+
+def parenthesized(tokens: list[PgToken], index: int) -> tuple[list[PgToken], int]:
+    if index >= len(tokens) or tokens[index].value != "(":
+        raise invalid("expected parenthesized query")
+    depth = tokens[index].depth
+    end = next((i for i in range(index + 1, len(tokens))
+                if tokens[i].value == ")" and tokens[i].depth == depth), -1)
+    if end < 0:
+        raise invalid("unclosed query")
+    return normalized(tokens[index + 1:end]), end + 1
+
+
+def validate_statement(tokens: list[PgToken], max_rows: int, require_limit: bool = True,
+                       query_only: bool = False) -> None:
+    tokens = unwrap_query(normalized(tokens))
+    validate_safe_tokens(tokens)
+    if tokens[0].keyword("WITH"):
+        i = 1
+        if i < len(tokens) and tokens[i].keyword("RECURSIVE"):
+            i += 1
+        while i < len(tokens):
+            if tokens[i].kind not in {"word", "identifier"}:
+                raise invalid("expected CTE name")
+            i += 1
+            if i < len(tokens) and tokens[i].value == "(":
+                columns, i = parenthesized(tokens, i)
+                if not columns or any(t.kind not in {"word", "identifier"} and t.value != ","
+                                      for t in columns):
+                    raise invalid("invalid CTE column list")
+            if i >= len(tokens) or not tokens[i].keyword("AS"):
+                raise invalid("expected AS in CTE")
+            i += 1
+            if i < len(tokens) and tokens[i].keyword("NOT"):
+                i += 1
+                if i >= len(tokens) or not tokens[i].keyword("MATERIALIZED"):
+                    raise invalid("expected MATERIALIZED")
+                i += 1
+            elif i < len(tokens) and tokens[i].keyword("MATERIALIZED"):
+                i += 1
+            body, i = parenthesized(tokens, i)
+            validate_statement(body, max_rows, False, True)
+            if i < len(tokens) and tokens[i].value == ",":
+                i += 1
+                continue
+            validate_statement(tokens[i:], max_rows, require_limit, True)
+            return
+        raise invalid("missing CTE query")
+    if not query_only and tokens[0].keyword("SHOW"):
+        names = [t.value for t in tokens[1:] if t.kind == "word"]
+        special = names in [["TIME", "ZONE"], ["TRANSACTION", "ISOLATION", "LEVEL"],
+                            ["SESSION", "AUTHORIZATION"]]
+        if not special and (len(tokens) != 2 or tokens[1].kind not in {"word", "identifier"}):
+            raise invalid("SHOW requires a setting name or ALL")
+        return
+    if not query_only and tokens[0].keyword("EXPLAIN"):
+        i = 1
+        if i < len(tokens) and tokens[i].value == "(":
+            options, i = parenthesized(tokens, i)
+            validate_explain_options(options)
+        elif i < len(tokens) and tokens[i].keyword("VERBOSE"):
+            i += 1
+        validate_statement(tokens[i:], max_rows, False, True)
+        return
+    validate_select(tokens, max_rows, require_limit)
+
+
+def validate_explain_options(tokens: list[PgToken]) -> None:
+    boolean_options = {"VERBOSE", "COSTS", "SETTINGS", "BUFFERS", "WAL", "TIMING",
+                       "SUMMARY", "GENERIC_PLAN", "MEMORY"}
+    seen: set[str] = set()
+    i = 0
+    while i < len(tokens):
+        option = tokens[i]
+        name = option.value.upper()
+        if option.kind not in {"word", "identifier"} or name in seen:
+            raise invalid("invalid or duplicate EXPLAIN option")
+        seen.add(name)
+        i += 1
+        if name in boolean_options:
+            if i < len(tokens) and tokens[i].value != ",":
+                if tokens[i].value.upper() not in {"TRUE", "FALSE", "ON", "OFF", "1", "0"}:
+                    raise invalid("invalid EXPLAIN boolean value")
+                i += 1
+        elif name == "FORMAT":
+            if i >= len(tokens) or tokens[i].value.upper() not in {"TEXT", "XML", "JSON", "YAML"}:
+                raise invalid("invalid EXPLAIN format")
+            i += 1
+        else:
+            raise SqlSafetyError("SQL_NOT_READ_ONLY", "unsupported EXPLAIN option; ANALYZE is forbidden")
+        if i == len(tokens):
+            return
+        if tokens[i].value != "," or i + 1 == len(tokens):
+            raise invalid("invalid EXPLAIN option separator")
+        i += 1
+    raise invalid("EXPLAIN options cannot be empty")
 
 
 def validate_select(tokens: list[PgToken], max_rows: int, require_limit: bool = True) -> None:
     tokens = unwrap_query(tokens)
     validate_safe_tokens(tokens)
     start = next((token for token in tokens if token.value != "("), None)
-    if start is None or not start.keyword("SELECT") or any(
-        token.kind == "word" and token.value in {"WITH", "SHOW", "EXPLAIN"} for token in tokens
-    ):
+    if start is None or not start.keyword("SELECT"):
         raise SqlSafetyError("SQL_NOT_READ_ONLY", "only PostgreSQL SELECT is supported")
+    for i, token in enumerate(tokens):
+        if token.kind == "word" and token.value in {"SHOW", "EXPLAIN"}:
+            raise SqlSafetyError("SQL_NOT_READ_ONLY", "unsupported nested statement")
+        if token.keyword("WITH"):
+            if i == 0 or tokens[i - 1].value != "(":
+                raise invalid("unsupported WITH placement")
+            body, _ = parenthesized(tokens, i - 1)
+            validate_statement(body, max_rows, False, True)
     top = [t for t in tokens if t.depth == 0]
     combined = any(t.kind == "word" and t.value in SET_OPERATORS for t in top)
     needs_limit = (tokens[0].value == "(" or combined or

@@ -137,10 +137,15 @@ PostgreSQL profile。16、17、18 为集成测试目标；跳过容器测试不�
 连接检查和查询都启用并确认只读会话；连接检查报告实际 `tls_active`，查询保留
 production 精确 profile 确认。
 
-本阶段支持原生 `SELECT`、嵌套/括号及集合查询，SQL 原样下发。
-`WITH`、`SHOW`、`EXPLAIN` 暂不开放。普通表查询及集合查询需要不超过
+支持原生 `SELECT`、只读 `WITH`（含递归、嵌套及物化 CTE）、`SHOW` 和不执行查询的
+`EXPLAIN`，SQL 原样下发。普通表查询及集合查询需要不超过
 `max_rows` 的外层整数 `LIMIT`；`LIMIT ALL`、表达式、逗号语法和 `FETCH FIRST`
 不能代替。简单聚合投影、无外层 `FROM` 查询保留豁免；这不是全局输出行数硬上限。
+CTE 内部无需单独 LIMIT，最终查询沿用外层结果策略。`SHOW` 和 `EXPLAIN` 豁免
+LIMIT；EXPLAIN 包装查询仍检查写入、锁及危险调用。所有显式 `ANALYZE`/`ANALYSE`
+选项（包括 false）、`SERIALIZE`、重复或未知选项均保守拒绝。支持 `VERBOSE`、`COSTS`、
+`SETTINGS`、`BUFFERS`、`WAL`、`TIMING`、`SUMMARY`、`GENERIC_PLAN`、`MEMORY` 及
+`FORMAT TEXT/XML/JSON/YAML`，具体选项是否可用还取决于服务器版本。
 词法识别 dollar quote、转义字符串、双引号标识符和嵌套注释；Unicode 转义标识符
 和转义字符串续行保守拒绝。多语句、写入、DDL、行锁、psql 元命令及已知修改
 会话/序列、获取 advisory lock、管理性修改函数在访问驱动前拒绝，也检查带引号及

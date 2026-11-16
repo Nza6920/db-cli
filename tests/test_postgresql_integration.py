@@ -110,6 +110,31 @@ class PostgreSqlIntegrationMixin:
             else:
                 self.assertIn("0x00ff", result.stdout)  # type: ignore[attr-defined]
 
+    def test_ctes_show_and_nonexecuting_explain(self):
+        queries = [
+            ("WITH c AS (SELECT n FROM generate_series(1,3) AS n) SELECT * FROM c LIMIT 2", 2),
+            ("WITH RECURSIVE c(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM c WHERE n<3) SELECT * FROM c LIMIT 3", 3),
+            ("WITH c AS NOT MATERIALIZED (WITH d AS (SELECT 1 AS n) SELECT * FROM d) SELECT COUNT(*) AS total FROM c", 1),
+            ("SHOW TIME ZONE", 1),
+            ("SHOW transaction_read_only", 1),
+            ("EXPLAIN (COSTS OFF, VERBOSE) WITH c AS (SELECT n FROM generate_series(1,3) AS n) SELECT * FROM c", None),
+        ]
+        for sql, count in queries:
+            for output in ("json", "csv", "table"):
+                with self.subTest(sql=sql, output=output):  # type: ignore[attr-defined]
+                    result = self.run_validate(query=sql, output=output)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)  # type: ignore[attr-defined]
+                    if output == "json":
+                        data = json.loads(result.stdout)
+                        if count is not None:
+                            self.assertEqual(data["row_count"], count)  # type: ignore[attr-defined]
+                        if sql == "SHOW transaction_read_only":
+                            self.assertEqual(data["rows"], [{"transaction_read_only": "on"}])  # type: ignore[attr-defined]
+                        if sql.startswith("EXPLAIN"):
+                            self.assertIn("Function Scan", str(data["rows"]))  # type: ignore[attr-defined]
+                    else:
+                        self.assertTrue(result.stdout.strip())  # type: ignore[attr-defined]
+
     def test_postgresql_lexical_forms_parse_on_server(self):
         sql = r"""SELECT $tag$; DROP TABLE x; FOR UPDATE$tag$ AS "update",
                   E'escaped\\text' AS escaped, U&'d\0061ta' AS unicode,

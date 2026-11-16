@@ -149,14 +149,21 @@ skipped container tests do not establish runtime support. Connection checks and
 queries enable and verify a read-only session. Connection checks report actual
 `tls_active`; queries retain exact production-profile confirmation.
 
-PostgreSQL currently accepts native `SELECT`, including nested/parenthesized and
-set queries, and delivers accepted SQL unchanged. `WITH`, `SHOW` and `EXPLAIN`
-remain blocked in this stage. Table and set queries require an outer integer
+PostgreSQL accepts native `SELECT`, read-only `WITH` (including recursive,
+nested and materialized CTEs), `SHOW`, and nonexecuting `EXPLAIN`. Accepted SQL
+is delivered unchanged. Table and set queries require an outer integer
 `LIMIT` within `max_rows`; `LIMIT ALL`, expressions, comma syntax and `FETCH FIRST`
 are not substitutes. Simple aggregate projections and queries without outer
 `FROM` retain their exemptions; this is not a universal output-row hard cap.
 Dollar strings, escape strings, quoted identifiers and nested comments are
-recognized. Unicode escaped identifiers and escape-string continuations fail
+recognized. CTE bodies do not need independent row limits; their final query
+follows the outer-result policy. `SHOW` and `EXPLAIN` are exempt from row limits.
+`EXPLAIN` still validates the wrapped query for writes, locks and dangerous calls.
+Every explicit `ANALYZE`/`ANALYSE` option (including false), `SERIALIZE`, duplicate
+or unknown EXPLAIN options fails closed. Supported options are `VERBOSE`, `COSTS`,
+`SETTINGS`, `BUFFERS`, `WAL`, `TIMING`, `SUMMARY`, `GENERIC_PLAN`, `MEMORY` and
+`FORMAT TEXT/XML/JSON/YAML`; option availability also depends on server version.
+Unicode escaped identifiers and escape-string continuations fail
 closed. Multiple statements, writes, DDL, row locks, psql commands and known
 session/sequence/advisory-lock or administrative mutation functions are rejected
 before driver access, including quoted/schema-qualified function calls. Arbitrary

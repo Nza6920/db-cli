@@ -106,7 +106,6 @@ class PostgreSqlCliTests(unittest.TestCase):
             "SELECT pg_notify('x','y')", "SELECT setval('s',1)",
             "/* prefix */ \\dt", "SELECT 1; SELECT 2", "SELECT $$unterminated",
             "SELECT 1 /* outer /* inner */", "SELECT (1", "SELECT `x`",
-            "WITH c AS (SELECT 1) SELECT * FROM c LIMIT 1", "SHOW timezone", "EXPLAIN SELECT 1",
         ]
         for sql in rejected:
             with self.subTest(sql=sql):
