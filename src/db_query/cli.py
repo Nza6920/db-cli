@@ -10,7 +10,7 @@ from typing import Any
 
 from db_query.config import Config, ConfigError, config_path, load_config, profile_warnings
 from db_query.errors import RunnerError
-from db_query.mysql_runner import run_query, validate_connection
+from db_query.backend import run_query, validate_connection
 from db_query.output_formatting import render_csv, render_table
 from db_query.sql_safety import SqlSafetyError, validate_read_only
 
@@ -70,6 +70,7 @@ def main(argv: list[str] | None = None) -> int:
             profiles.append(
                 {
                     "name": profile.name,
+                    "driver": profile.driver,
                     "environment": profile.environment,
                     "host": profile.host,
                     "port": profile.port,
@@ -154,7 +155,7 @@ def main(argv: list[str] | None = None) -> int:
         _emit_warnings(_warnings_for(config, [profile.name]))
         sql = sys.stdin.read() if args.stdin else args.sql
         try:
-            validate_read_only(sql, max_rows=profile.max_rows)
+            validate_read_only(sql, max_rows=profile.max_rows, driver=profile.driver)
         except SqlSafetyError as exc:
             return _error(exc.code, str(exc), 2)
         if profile.environment == "production" and args.confirm_profile != profile.name:

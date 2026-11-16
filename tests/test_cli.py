@@ -359,6 +359,7 @@ class DbQueryCliTests(unittest.TestCase):
                 "profiles": [
                     {
                         "name": "prod",
+                        "driver": "mysql",
                         "environment": "production",
                         "host": "jms.newchiwan.cn",
                         "port": 33061,

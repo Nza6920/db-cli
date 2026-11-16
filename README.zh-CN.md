@@ -108,6 +108,65 @@ TLS 默认为 `required`，会验证系统信任链和 hostname。`preferred` �
 production profile 可以显式选择较弱模式，但命令会输出与该 profile 相关的
 警告。
 
+## PostgreSQL 查询（开发版本）
+
+在当前 checkout 执行 `pip install '.[postgresql]'`（或
+`pipx install --force '.[postgresql]'`）安装可选驱动。仅使用 MySQL 无需安装。
+选用 PostgreSQL 却未安装驱动时，返回含安装提示的结构化
+`DRIVER_NOT_INSTALLED` 错误。
+
+省略 `driver` 默认为 `mysql`。PostgreSQL 必须显式配置 `driver = "postgresql"`，
+URL 格式为 `postgresql://host[:port]/database`；默认端口 5432，必须指定数据库。
+拒绝 driver/URL 不匹配、URL 内嵌凭据、Unix socket、多主机及 URL 参数。
+MySQL 继续允许省略数据库。两个后端均使用 `username` 和 `password_env`。
+
+```toml
+[profiles.pg]
+driver = "postgresql"
+url = "postgresql://db.example.cn:5432/analytics"
+username = "readonly_user"
+password_env = "DB_QUERY_PG_PASSWORD"
+environment = "staging"
+tls = "required"
+# 私有 CA 可选配置：
+# tls_ca_file = "/path/to/ca.pem"
+```
+
+`profiles`、离线 `validate`、`validate --profile pg --connect` 和 `query` 支持
+PostgreSQL profile。16、17、18 为集成测试目标；跳过容器测试不能证明版本支持。
+连接检查和查询都启用并确认只读会话；连接检查报告实际 `tls_active`，查询保留
+production 精确 profile 确认。
+
+支持原生 `SELECT`、只读 `WITH`（含递归、嵌套及物化 CTE）、`SHOW` 和不执行查询的
+`EXPLAIN`，SQL 原样下发。普通表查询及集合查询需要不超过
+`max_rows` 的外层整数 `LIMIT`；`LIMIT ALL`、表达式、逗号语法和 `FETCH FIRST`
+不能代替。简单聚合投影、无外层 `FROM` 查询保留豁免；这不是全局输出行数硬上限。
+CTE 内部无需单独 LIMIT，最终查询沿用外层结果策略。`SHOW` 和 `EXPLAIN` 豁免
+LIMIT；EXPLAIN 包装查询仍检查写入、锁及危险调用。所有显式 `ANALYZE`/`ANALYSE`
+选项（包括 false）、`SERIALIZE`、重复或未知选项均保守拒绝。支持 `VERBOSE`、`COSTS`、
+`SETTINGS`、`BUFFERS`、`WAL`、`TIMING`、`SUMMARY`、`GENERIC_PLAN`、`MEMORY` 及
+`FORMAT TEXT/XML/JSON/YAML`，具体选项是否可用还取决于服务器版本。
+词法识别 dollar quote、转义字符串、双引号标识符和嵌套注释；行注释以 LF、CR 或
+CRLF 结束。允许 `substring`、`overlay`、`replace` 等普通字符串函数，仍拒绝行锁子句。
+空括号查询返回结构化 `SQL_INVALID` 错误。Unicode 转义标识符
+和转义字符串续行保守拒绝。多语句、写入、DDL、行锁、psql 元命令及已知修改
+会话/序列、获取 advisory lock、管理性修改函数在访问驱动前拒绝，也检查带引号及
+schema 限定的函数调用。任意自定义函数的副作用仍需数据库权限约束。
+
+整数、文本、Decimal、无时区日期/时间、二进制和 NULL 沿用现有 JSON/CSV/table
+格式与 envelope，拒绝重复列名。PostgreSQL 布尔值保留为 JSON boolean，带时区
+的 datetime/time 使用含偏移的 ISO 8601 字符串，UUID 为字符串。JSON/JSONB
+和数组保留对象/数组及嵌套结构，数组元素遵循相同标量规则。SQL NULL 与 JSON
+null 均为 JSON null，不增加类型包装。CSV/table 将对象和数组显示为紧凑 JSON
+文本。不可表示的值及非字符串对象键返回 `RESULT_ENCODING_FAILED`。
+
+PostgreSQL 的 TLS `required` 使用 `verify-full` 验证证书及主机名，默认使用系统
+信任根，私有 CA 使用 `tls_ca_file`。`preferred` 优先 TLS，可回退明文，不验证
+证书；`disabled` 禁止 TLS。MySQL TLS 行为保持不变。
+`connect_timeout_seconds` 控制连接建立超时。PostgreSQL 的 `query_timeout_seconds`
+设置服务端毫秒级 `statement_timeout`，取消映射到 `QUERY_TIMEOUT`；MySQL 的 `query_timeout_seconds` 继续映射到 read/write socket timeout。
+两者都不是端到端总时限。
+
 ## 查询
 
 通过 stdin 传入 agent 生成的 SQL，避免 SQL 出现在进程参数中：
@@ -144,7 +203,7 @@ count 和 rows。`--format csv` 使用标准 CSV quoting，以 `\N` 表示 null�
 `NULL` 表示 null，并关闭数字解析，从而保留前导零和高精度数字字符串。
 
 所有格式使用同一套标量语义：Decimal 为字符串；整数和 MySQL boolean alias
-保持 JSON number；date 为 `YYYY-MM-DD`；datetime 为不带时区的 ISO 8601；
+保持 JSON number；date 为 `YYYY-MM-DD`；无时区 datetime 为 ISO 8601；
 带符号的 MySQL time 保留符号和微秒；binary 使用可逆的小写 `0x` 前缀十六
 进制。重复结果列名会返回 `RESULT_ENCODING_FAILED`，调用方需要提供唯一 SQL
 alias。工具没有总输出字节上限，因此即使明细行数受限，也应避免选择大型
@@ -202,10 +261,11 @@ $db-query 使用 prod profile 查询项目 252143 最近 20 条运单
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-python3 -m pip install -e '.[dev]'
+python3 -m pip install -e '.[dev,postgresql]'
 python3 -m mypy
 python3 -m unittest discover -s tests -v
 DB_QUERY_RUN_MYSQL_INTEGRATION=1 python3 -m unittest discover -s tests -p test_mysql_integration.py -v
+DB_QUERY_RUN_POSTGRESQL_INTEGRATION=1 python3 -m unittest discover -s tests -p test_postgresql_integration.py -v
 ```
 
 Windows PowerShell 使用 `.venv\Scripts\Activate.ps1` 激活虚拟环境。
@@ -215,4 +275,7 @@ Mypy 检查 `src/db_query` 和 `tests`，包括未标注类型的函数体。
 第三方类型信息的错误。GitHub Actions 在推送和 pull request 时使用 Python 3.11
 运行同一类型检查命令。
 
-集成测试只创建一次性本地 MySQL 容器，不访问 UAT 或 production。
+集成测试仅创建一次性本地 MySQL 和 PostgreSQL 16/17/18 容器，不访问 UAT 或
+production。PostgreSQL 测试需要 Docker 和 OpenSSL，生成临时 CA 与服务器证书，
+覆盖可信 TLS、错误 CA、主机名不匹配、认证及只读会话初始化。跳过项必须单独
+报告，不能视为对应版本的支持证据。

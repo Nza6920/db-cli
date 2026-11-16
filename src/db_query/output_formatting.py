@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 from typing import cast
 
 
@@ -30,8 +31,14 @@ def render_table(columns: list[str], rows: list[dict[str, object]]) -> str:
 
 
 def _csv_value(value: object) -> object:
-    return "\\N" if value is None else value
+    return "\\N" if value is None else _text_value(value)
 
 
 def _table_value(value: object) -> object:
-    return "NULL" if value is None else value
+    return "NULL" if value is None else _text_value(value)
+
+
+def _text_value(value: object) -> object:
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    return value

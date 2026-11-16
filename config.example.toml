@@ -1,3 +1,4 @@
+# Omitted driver defaults to mysql.
 [profiles.prod]
 url = "jdbc:mysql://jms.example.cn:33061/"
 username = "readonly_user"
@@ -18,3 +19,19 @@ environment = "staging"
 tls = "required"
 # Each profile can choose its own cap; SQL still needs an explicit LIMIT.
 max_rows = 2000
+
+# PostgreSQL returns native boolean/JSON/arrays; CSV/table use compact JSON text.
+[profiles.pg]
+driver = "postgresql"
+# PostgreSQL requires a database; single TCP host only, default port 5432.
+url = "postgresql://pg.example.cn:5432/analytics"
+username = "readonly_user"
+password_env = "DB_QUERY_PG_PASSWORD"
+environment = "staging"
+tls = "required"
+# Optional private CA bundle; required verifies the certificate and hostname.
+# tls_ca_file = "/path/to/ca.pem"
+connect_timeout_seconds = 5
+# PostgreSQL server-side statement timeout; not an end-to-end deadline.
+query_timeout_seconds = 30
+max_rows = 1000

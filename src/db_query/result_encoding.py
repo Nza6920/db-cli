@@ -2,13 +2,32 @@ from __future__ import annotations
 
 import datetime
 from decimal import Decimal
-from typing import Sequence
+from typing import Callable, Sequence
+from uuid import UUID
 
 from db_query.errors import RunnerError
 
 
 def normalize_rows(
     columns: list[str], raw_rows: Sequence[Sequence[object]]
+) -> list[dict[str, object]]:
+    return _normalize_rows(columns, raw_rows, normalize_value)
+
+
+def normalize_postgresql_rows(
+    columns: list[str], raw_rows: Sequence[Sequence[object]]
+) -> list[dict[str, object]]:
+    try:
+        return _normalize_rows(columns, raw_rows, normalize_postgresql_value)
+    except RecursionError as exc:
+        raise RunnerError(
+            "RESULT_ENCODING_FAILED", "database result nesting cannot be represented safely", 5
+        ) from exc
+
+
+def _normalize_rows(
+    columns: list[str], raw_rows: Sequence[Sequence[object]],
+    encode_value: Callable[[object], object],
 ) -> list[dict[str, object]]:
     if len(columns) != len(set(columns)):
         raise RunnerError(
@@ -26,7 +45,7 @@ def normalize_rows(
             )
         rows.append(
             {
-                column: normalize_value(value)
+                column: encode_value(value)
                 for column, value in zip(columns, raw_row, strict=True)
             }
         )
@@ -65,6 +84,22 @@ def normalize_value(value: object) -> object:
         f"unsupported database result type: {type(value).__name__}",
         5,
     )
+
+
+def normalize_postgresql_value(value: object) -> object:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (datetime.datetime, datetime.time)):
+        return value.isoformat()
+    if isinstance(value, UUID):
+        return str(value)
+    if isinstance(value, dict):
+        if any(not isinstance(key, str) for key in value):
+            raise RunnerError("RESULT_ENCODING_FAILED", "JSON object keys must be strings", 5)
+        return {key: normalize_postgresql_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [normalize_postgresql_value(item) for item in value]
+    return normalize_value(value)
 
 
 def _format_timedelta(value: datetime.timedelta) -> str:

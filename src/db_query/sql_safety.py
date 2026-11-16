@@ -49,7 +49,11 @@ AGGREGATES = {"COUNT", "SUM", "AVG", "MIN", "MAX"}
 SET_OPERATORS = {"UNION", "INTERSECT", "EXCEPT"}
 
 
-def validate_read_only(sql: str, max_rows: int = 1000) -> None:
+def validate_read_only(sql: str, max_rows: int = 1000, driver: str = "mysql") -> None:
+    if driver == "postgresql":
+        from db_query.postgresql_sql import validate_postgresql
+        validate_postgresql(sql, max_rows)
+        return
     if sql.lstrip().startswith("\\"):
         raise SqlSafetyError("SQL_META_COMMAND", "SQL client meta-commands are not allowed")
     tokens = _tokens(sql)

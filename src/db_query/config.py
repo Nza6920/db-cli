@@ -34,6 +34,8 @@ class Profile:
     database: str | None
     jdbc_options: tuple[tuple[str, str], ...]
     max_rows: int = 1000
+    driver: str = "mysql"
+    tls_ca_file: str | None = None
 
 
 @dataclass(frozen=True)
@@ -103,6 +105,8 @@ def _parse_profile(name: str, values: dict[str, object]) -> Profile:
             f"profile {name!r} contains forbidden plaintext field: {sorted(forbidden)[0]}"
         )
     allowed = {
+        "driver",
+        "tls_ca_file",
         "url",
         "username",
         "password_env",
@@ -124,7 +128,18 @@ def _parse_profile(name: str, values: dict[str, object]) -> Profile:
     environment = _required_string(name, values, "environment")
     if environment not in ENVIRONMENTS:
         raise ConfigError(f"profile {name!r} has invalid environment: {environment}")
-    host, port, database, options = _parse_mysql_url(name, url)
+    driver = values.get("driver", "mysql")
+    if driver not in ("mysql", "postgresql"):
+        raise ConfigError(f"profile {name!r} has invalid driver")
+    tls_ca_file = values.get("tls_ca_file")
+    if tls_ca_file is not None and (not isinstance(tls_ca_file, str) or not tls_ca_file):
+        raise ConfigError(f"profile {name!r} tls_ca_file must be a non-empty path")
+    if driver == "mysql" and tls_ca_file is not None:
+        raise ConfigError(f"profile {name!r} tls_ca_file is supported only for PostgreSQL")
+    host, port, database, options = (
+        _parse_postgresql_url(name, url) if driver == "postgresql"
+        else _parse_mysql_url(name, url)
+    )
     jdbc_options = dict(options)
     tls = values.get("tls")
     if tls is None:
@@ -154,6 +169,8 @@ def _parse_profile(name: str, values: dict[str, object]) -> Profile:
         database=database,
         jdbc_options=options,
         max_rows=max_rows,
+        driver=driver,
+        tls_ca_file=tls_ca_file,
     )
 
 
@@ -243,3 +260,26 @@ def _file_warnings(path: Path) -> list[str]:
     except FileNotFoundError:
         pass
     return warnings
+
+
+def _parse_postgresql_url(
+    name: str, url: str
+) -> tuple[str, int, str | None, tuple[tuple[str, str], ...]]:
+    try:
+        parsed = urlsplit(url)
+        host = parsed.hostname
+        port = parsed.port or 5432
+    except ValueError as exc:
+        raise ConfigError(f"profile {name!r} has invalid PostgreSQL URL") from exc
+    if parsed.scheme != "postgresql":
+        raise ConfigError(f"profile {name!r} must use postgresql://")
+    if "@" in parsed.netloc:
+        raise ConfigError(f"profile {name!r} URL must not contain credentials")
+    if not host or any(char in unquote(host) for char in ",/\\ \t\r\n"):
+        raise ConfigError(f"profile {name!r} requires a single TCP hostname")
+    if parsed.query or parsed.fragment:
+        raise ConfigError(f"profile {name!r} PostgreSQL URL options are not supported")
+    database = unquote(parsed.path[1:])
+    if not database or "/" in database or "\x00" in database:
+        raise ConfigError(f"profile {name!r} PostgreSQL URL requires one database name")
+    return host, port, database, ()

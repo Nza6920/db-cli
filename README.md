@@ -118,6 +118,78 @@ TLS defaults to `required`, which validates the system trust chain and hostname.
 only when TLS is unavailable. `disabled` prohibits TLS. A production profile
 may explicitly choose a weaker mode, but the command emits a scoped warning.
 
+## PostgreSQL queries (development checkout)
+
+Install the optional driver from this checkout with `pip install '.[postgresql]'`
+(or `pipx install --force '.[postgresql]'`). MySQL-only installations need no
+PostgreSQL driver. Selecting PostgreSQL without the extra returns a structured
+`DRIVER_NOT_INSTALLED` error with installation instructions.
+
+Profiles default to `driver = "mysql"` when omitted. Set `driver = "postgresql"`
+explicitly with a `postgresql://host[:port]/database` URL; port defaults to 5432
+and the database is mandatory. Driver/URL mismatches, embedded credentials,
+Unix sockets, multiple hosts and URL options are rejected. MySQL database names
+remain optional. Both backends use `username` and `password_env`.
+
+```toml
+[profiles.pg]
+driver = "postgresql"
+url = "postgresql://db.example.cn:5432/analytics"
+username = "readonly_user"
+password_env = "DB_QUERY_PG_PASSWORD"
+environment = "staging"
+tls = "required"
+# Optional PostgreSQL CA bundle for private certificates:
+# tls_ca_file = "/path/to/ca.pem"
+```
+
+`profiles`, offline `validate`, `validate --profile pg --connect`, and `query`
+support PostgreSQL profiles. PostgreSQL 16, 17 and 18 are integration-test targets;
+skipped container tests do not establish runtime support. Connection checks and
+queries enable and verify a read-only session. Connection checks report actual
+`tls_active`; queries retain exact production-profile confirmation.
+
+PostgreSQL accepts native `SELECT`, read-only `WITH` (including recursive,
+nested and materialized CTEs), `SHOW`, and nonexecuting `EXPLAIN`. Accepted SQL
+is delivered unchanged. Table and set queries require an outer integer
+`LIMIT` within `max_rows`; `LIMIT ALL`, expressions, comma syntax and `FETCH FIRST`
+are not substitutes. Simple aggregate projections and queries without outer
+`FROM` retain their exemptions; this is not a universal output-row hard cap.
+Dollar strings, escape strings, quoted identifiers and nested comments are
+recognized. Line comments end at LF, CR or CRLF. Ordinary string functions
+including `substring`, `overlay` and `replace` are allowed; locking clauses remain
+rejected. Empty parenthesized queries return structured `SQL_INVALID` errors.
+CTE bodies do not need independent row limits; their final query
+follows the outer-result policy. `SHOW` and `EXPLAIN` are exempt from row limits.
+`EXPLAIN` still validates the wrapped query for writes, locks and dangerous calls.
+Every explicit `ANALYZE`/`ANALYSE` option (including false), `SERIALIZE`, duplicate
+or unknown EXPLAIN options fails closed. Supported options are `VERBOSE`, `COSTS`,
+`SETTINGS`, `BUFFERS`, `WAL`, `TIMING`, `SUMMARY`, `GENERIC_PLAN`, `MEMORY` and
+`FORMAT TEXT/XML/JSON/YAML`; option availability also depends on server version.
+Unicode escaped identifiers and escape-string continuations fail
+closed. Multiple statements, writes, DDL, row locks, psql commands and known
+session/sequence/advisory-lock or administrative mutation functions are rejected
+before driver access, including quoted/schema-qualified function calls. Arbitrary
+user-defined function side effects still depend on database privileges.
+
+Integer, text, Decimal, naive date/time, binary and NULL results use the existing
+JSON/CSV/table envelopes and representations; duplicate columns are rejected.
+PostgreSQL booleans remain JSON booleans, timezone-aware datetime/time values use
+ISO 8601 strings with offsets, and UUIDs become strings. JSON/JSONB and arrays
+retain objects/arrays, including nested values; array elements use the same
+scalar rules. SQL NULL and JSON null both become JSON null without type wrappers.
+CSV/table render objects and arrays as compact JSON text. Unsupported values or
+object keys that are not strings fail with `RESULT_ENCODING_FAILED`.
+
+PostgreSQL TLS `required` uses certificate and hostname verification (`verify-full`)
+with system trust by default, or `tls_ca_file` for a private CA. `preferred` requests
+TLS with plaintext fallback, without certificate verification; `disabled` prohibits
+TLS. MySQL TLS behavior is unchanged. `connect_timeout_seconds` controls connection
+establishment. PostgreSQL `query_timeout_seconds` sets the server-side
+`statement_timeout` in milliseconds, with cancellation reported as `QUERY_TIMEOUT`.
+MySQL `query_timeout_seconds` continues to control read/write socket timeouts.
+Neither setting is an end-to-end deadline.
+
 ## Query
 
 Pass agent-generated SQL over stdin so it does not appear in process arguments:
@@ -156,8 +228,8 @@ uses a SQL-style `psql` layout, renders null as `NULL`, and disables numeric
 parsing so leading-zero and precision-preserving strings stay unchanged.
 
 Across all formats, Decimal values are strings; integers and MySQL boolean
-aliases remain JSON numbers; dates use `YYYY-MM-DD`; datetimes use timezone-free
-ISO 8601; signed MySQL times retain their sign and microseconds; and binary data
+aliases remain JSON numbers; dates use `YYYY-MM-DD`; naive datetimes use
+timezone-free ISO 8601; signed MySQL times retain their sign and microseconds; and binary data
 uses reversible lowercase `0x`-prefixed hexadecimal. Duplicate result column
 names fail with `RESULT_ENCODING_FAILED`; provide unique SQL aliases. There is
 no total output-byte limit, so avoid selecting large binary fields even though
@@ -223,10 +295,11 @@ Use Python 3.11+ and install the development dependencies in a virtual environme
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-python3 -m pip install -e '.[dev]'
+python3 -m pip install -e '.[dev,postgresql]'
 python3 -m mypy
 python3 -m unittest discover -s tests -v
 DB_QUERY_RUN_MYSQL_INTEGRATION=1 python3 -m unittest discover -s tests -p test_mysql_integration.py -v
+DB_QUERY_RUN_POSTGRESQL_INTEGRATION=1 python3 -m unittest discover -s tests -p test_postgresql_integration.py -v
 ```
 
 On Windows PowerShell, activate the environment with `.venv\Scripts\Activate.ps1`.
@@ -236,5 +309,8 @@ annotations. Its version and configuration live in `pyproject.toml`; the
 configuration scopes its missing-import exemption to PyMySQL. GitHub Actions runs
 the same type check on pushes and pull requests using Python 3.11.
 
-The integration suite creates disposable local MySQL containers and never
-accesses UAT or production.
+The integration suites create disposable local MySQL and PostgreSQL 16/17/18
+containers and never access UAT or production. PostgreSQL tests require Docker and
+OpenSSL, generate disposable CA/server certificates, and cover trusted TLS, bad CA,
+hostname mismatch, authentication, and read-only connection initialization. Report
+skipped integration tests separately; a skip does not establish version support.
