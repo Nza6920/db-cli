@@ -153,15 +153,9 @@ def main(argv: list[str] | None = None) -> int:
             return _error("PROFILE_NOT_FOUND", f"unknown profile: {args.profile}", 2)
         profile = config.profiles[args.profile]
         _emit_warnings(_warnings_for(config, [profile.name]))
-        if profile.driver == "postgresql":
-            return _error(
-                "POSTGRESQL_QUERY_UNAVAILABLE",
-                "PostgreSQL queries are not available in this release; use validate --connect",
-                2,
-            )
         sql = sys.stdin.read() if args.stdin else args.sql
         try:
-            validate_read_only(sql, max_rows=profile.max_rows)
+            validate_read_only(sql, max_rows=profile.max_rows, driver=profile.driver)
         except SqlSafetyError as exc:
             return _error(exc.code, str(exc), 2)
         if profile.environment == "production" and args.confirm_profile != profile.name:

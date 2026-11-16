@@ -108,7 +108,7 @@ TLS 默认为 `required`，会验证系统信任链和 hostname。`preferred` �
 production profile 可以显式选择较弱模式，但命令会输出与该 profile 相关的
 警告。
 
-## PostgreSQL 连接检查（开发版本）
+## PostgreSQL 查询（开发版本）
 
 在当前 checkout 执行 `pip install '.[postgresql]'`（或
 `pipx install --force '.[postgresql]'`）安装可选驱动。仅使用 MySQL 无需安装。
@@ -132,17 +132,29 @@ tls = "required"
 # tls_ca_file = "/path/to/ca.pem"
 ```
 
-`profiles`、离线 `validate` 和 `validate --profile pg --connect` 支持
-PostgreSQL 16、17、18。连接检查启用并确认只读会话后才返回成功，使用
-`tls_active` 报告实际 TLS 状态。production 仍要求精确 profile 确认。
-本阶段 PostgreSQL `query` 返回 `POSTGRESQL_QUERY_UNAVAILABLE`，不会访问驱动；
-下文 SQL 策略和结果格式目前仅适用于 MySQL。
+`profiles`、离线 `validate`、`validate --profile pg --connect` 和 `query` 支持
+PostgreSQL profile。16、17、18 为集成测试目标；跳过容器测试不能证明版本支持。
+连接检查和查询都启用并确认只读会话；连接检查报告实际 `tls_active`，查询保留
+production 精确 profile 确认。
+
+本阶段支持原生 `SELECT`、嵌套/括号及集合查询，SQL 原样下发。
+`WITH`、`SHOW`、`EXPLAIN` 暂不开放。普通表查询及集合查询需要不超过
+`max_rows` 的外层整数 `LIMIT`；`LIMIT ALL`、表达式、逗号语法和 `FETCH FIRST`
+不能代替。简单聚合投影、无外层 `FROM` 查询保留豁免；这不是全局输出行数硬上限。
+词法识别 dollar quote、转义字符串、双引号标识符和嵌套注释；Unicode 转义标识符
+和转义字符串续行保守拒绝。多语句、写入、DDL、行锁、psql 元命令及已知修改
+会话/序列、获取 advisory lock、管理性修改函数在访问驱动前拒绝，也检查带引号及
+schema 限定的函数调用。任意自定义函数的副作用仍需数据库权限约束。
+
+整数、文本、Decimal、无时区日期/时间、二进制和 NULL 沿用现有 JSON/CSV/table
+格式与 envelope，拒绝重复列名。PostgreSQL 特有布尔、带时区时间、UUID、JSON
+和数组在后续类型支持前明确返回 `RESULT_ENCODING_FAILED`。
 
 PostgreSQL 的 TLS `required` 使用 `verify-full` 验证证书及主机名，默认使用系统
 信任根，私有 CA 使用 `tls_ca_file`。`preferred` 优先 TLS，可回退明文，不验证
 证书；`disabled` 禁止 TLS。MySQL TLS 行为保持不变。
-`connect_timeout_seconds` 控制连接建立超时。PostgreSQL 查询超时将在开放查询时
-实现；MySQL 的 `query_timeout_seconds` 继续映射到 read/write socket timeout。
+`connect_timeout_seconds` 控制连接建立超时。PostgreSQL 的 `query_timeout_seconds`
+设置服务端毫秒级 `statement_timeout`，取消映射到 `QUERY_TIMEOUT`；MySQL 的 `query_timeout_seconds` 继续映射到 read/write socket timeout。
 两者都不是端到端总时限。
 
 ## 查询

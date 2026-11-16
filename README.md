@@ -118,7 +118,7 @@ TLS defaults to `required`, which validates the system trust chain and hostname.
 only when TLS is unavailable. `disabled` prohibits TLS. A production profile
 may explicitly choose a weaker mode, but the command emits a scoped warning.
 
-## PostgreSQL connection checks (development checkout)
+## PostgreSQL queries (development checkout)
 
 Install the optional driver from this checkout with `pip install '.[postgresql]'`
 (or `pipx install --force '.[postgresql]'`). MySQL-only installations need no
@@ -143,18 +143,36 @@ tls = "required"
 # tls_ca_file = "/path/to/ca.pem"
 ```
 
-`profiles`, offline `validate`, and `validate --profile pg --connect` support
-PostgreSQL 16, 17 and 18. Connection checks enable and verify a read-only session
-before reporting success and return the actual `tls_active` state. Exact
-production-profile confirmation also applies. PostgreSQL `query` is intentionally
-unavailable at this stage and returns `POSTGRESQL_QUERY_UNAVAILABLE` before driver
-access; the SQL and output descriptions below currently apply to MySQL only.
+`profiles`, offline `validate`, `validate --profile pg --connect`, and `query`
+support PostgreSQL profiles. PostgreSQL 16, 17 and 18 are integration-test targets;
+skipped container tests do not establish runtime support. Connection checks and
+queries enable and verify a read-only session. Connection checks report actual
+`tls_active`; queries retain exact production-profile confirmation.
+
+PostgreSQL currently accepts native `SELECT`, including nested/parenthesized and
+set queries, and delivers accepted SQL unchanged. `WITH`, `SHOW` and `EXPLAIN`
+remain blocked in this stage. Table and set queries require an outer integer
+`LIMIT` within `max_rows`; `LIMIT ALL`, expressions, comma syntax and `FETCH FIRST`
+are not substitutes. Simple aggregate projections and queries without outer
+`FROM` retain their exemptions; this is not a universal output-row hard cap.
+Dollar strings, escape strings, quoted identifiers and nested comments are
+recognized. Unicode escaped identifiers and escape-string continuations fail
+closed. Multiple statements, writes, DDL, row locks, psql commands and known
+session/sequence/advisory-lock or administrative mutation functions are rejected
+before driver access, including quoted/schema-qualified function calls. Arbitrary
+user-defined function side effects still depend on database privileges.
+
+Integer, text, Decimal, naive date/time, binary and NULL results use the existing
+JSON/CSV/table envelopes and representations; duplicate columns are rejected.
+PostgreSQL-specific booleans, timezone-aware values, UUIDs, JSON and arrays report
+`RESULT_ENCODING_FAILED` until native type support is added.
 
 PostgreSQL TLS `required` uses certificate and hostname verification (`verify-full`)
 with system trust by default, or `tls_ca_file` for a private CA. `preferred` requests
 TLS with plaintext fallback, without certificate verification; `disabled` prohibits
 TLS. MySQL TLS behavior is unchanged. `connect_timeout_seconds` controls connection
-establishment. PostgreSQL query timeout support will be added with user queries;
+establishment. PostgreSQL `query_timeout_seconds` sets the server-side
+`statement_timeout` in milliseconds, with cancellation reported as `QUERY_TIMEOUT`.
 MySQL `query_timeout_seconds` continues to control read/write socket timeouts.
 Neither setting is an end-to-end deadline.
 

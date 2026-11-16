@@ -19,6 +19,27 @@ tls = "required"
 '''
 
 
+def query_stub(sql: str, rows: str = "[(1, '50% text')]", columns: str = "['n', 'text']") -> str:
+    return f"""
+class Error(Exception): pass
+class Connection:
+    def __enter__(self): return self
+    def __exit__(self, *args): pass
+    def cursor(self): return Cursor()
+class Cursor:
+    description = [(name,) for name in {columns}]
+    def __enter__(self): return self
+    def __exit__(self, *args): pass
+    def execute(self, sql):
+        self.sql = sql
+        if not sql.startswith(('SET ', 'SHOW ')):
+            assert sql == {sql!r}, repr(sql)
+    def fetchone(self): return ('on',)
+    def fetchall(self): return {rows}
+def connect(**kwargs): return Connection()
+"""
+
+
 class PostgreSqlCliTests(unittest.TestCase):
     def run_cli(self, *args: str, config: str = CONFIG, stub: str | None = None):
         with tempfile.TemporaryDirectory() as directory:
@@ -35,6 +56,101 @@ class PostgreSqlCliTests(unittest.TestCase):
                      "PYTHONPATH": os.pathsep.join((directory, str(ROOT / "src")))},
                 text=True, capture_output=True,
             )
+
+    def test_select_delivers_original_sql_and_shared_scalars(self):
+        sql = "/* original */ SELECT 1 AS n, '50% text' AS text; -- tail"
+        for fmt in ("json", "csv", "table"):
+            result = self.run_cli("query", "--profile", "local", "--sql", sql,
+                                  "--format", fmt, stub=query_stub(sql))
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            if fmt == "json":
+                self.assertEqual(json.loads(result.stdout)["rows"], [{"n": 1, "text": "50% text"}])
+            else:
+                self.assertIn("50% text", result.stdout)
+
+    def test_postgresql_policy_preserves_literals_identifiers_and_outer_limits(self):
+        allowed = [
+            "SELECT $$; DROP TABLE t; FOR UPDATE$$", "SELECT $tag$set_config('x')$tag$",
+            r"SELECT E'escaped\\text; DELETE'", "SELECT U&'d\0061ta'",
+            'SELECT "update", "for", "limit" FROM t LIMIT 3',
+            "SELECT 1 /* outer /* DROP */ FOR UPDATE */; -- end",
+            'SELECT COUNT(*) AS "total" FROM t', "SELECT SUM(n), MAX(n) total FROM t",
+            "SELECT abs(1), current_setting('x')", "((SELECT * FROM t LIMIT 3))",
+            "(SELECT 1 UNION SELECT 2) LIMIT 3", "SELECT * FROM (SELECT * FROM t) s LIMIT 3",
+            "SELECT * FROM t LIMIT 3 OFFSET 9999", "SELECT 1 # 2",
+        ]
+        for sql in allowed:
+            with self.subTest(sql=sql):
+                result = self.run_cli("query", "--profile", "local", "--sql", sql,
+                                      stub=query_stub(sql))
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_postgresql_rejections_happen_before_driver_import(self):
+        rejected = [
+            "SELECT * FROM t", "SELECT * FROM t FETCH FIRST 1 ROW ONLY",
+            "SELECT * FROM t LIMIT ALL", "SELECT * FROM t LIMIT NULL",
+            "SELECT * FROM t LIMIT 1+1", "SELECT * FROM t LIMIT 1,2",
+            "SELECT * FROM t LIMIT -1", "SELECT * FROM t LIMIT 1001",
+            "SELECT * FROM t LIMIT " + "9" * 5000,
+            "SELECT * FROM t LIMIT 1 LIMIT 2", "SELECT * FROM t LIMIT $1",
+            "SELECT * FROM t LIMIT 1.0", "SELECT * FROM t LIMIT １",
+            "SELECT 1 UNION ALL SELECT 2", "(SELECT * FROM t LIMIT 1) UNION (SELECT 1 LIMIT 1)",
+            "SELECT COUNT(*) OVER () FROM t", "SELECT max FROM t", "SELECT SUM(n)+1 FROM t",
+            "SELECT COUNT(*), n FROM t", "SELECT COUNT(*) FROM t GROUP BY n",
+            "SELECT 1 INTO TEMP t", "SELECT * FROM t FOR UPDATE LIMIT 1",
+            "SELECT * FROM t FOR NO KEY UPDATE LIMIT 1", "SELECT * FROM t FOR SHARE LIMIT 1",
+            "SELECT * FROM t FOR KEY SHARE LIMIT 1", "SELECT \"set_config\"('x','y',false)",
+            "SELECT pg_catalog.\"nextval\"('s')", 'SELECT "pg_try_advisory_lock"(1)',
+            r"SELECT U&\"set_\0063onfig\"('x','y',false)",
+            r"SELECT U&\"set_!0063onfig\" UESCAPE '!' ('x','y',false)",
+            "SELECT pg_notify('x','y')", "SELECT setval('s',1)",
+            "/* prefix */ \\dt", "SELECT 1; SELECT 2", "SELECT $$unterminated",
+            "SELECT 1 /* outer /* inner */", "SELECT (1", "SELECT `x`",
+            "WITH c AS (SELECT 1) SELECT * FROM c LIMIT 1", "SHOW timezone", "EXPLAIN SELECT 1",
+        ]
+        for sql in rejected:
+            with self.subTest(sql=sql):
+                result = self.run_cli("query", "--profile", "local", "--sql", sql,
+                                      stub="raise AssertionError('must reject before import')")
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertTrue(json.loads(result.stdout)["error"]["code"].startswith("SQL_"))
+
+    def test_query_timeout_and_failure_are_structured_and_redacted(self):
+        sql = "SELECT pg_sleep(2)"
+        for state, code in (("57014", "QUERY_TIMEOUT"), ("42P01", "QUERY_FAILED")):
+            stub = query_stub(sql).replace("class Error(Exception): pass",
+                    f"class Error(Exception): sqlstate = {state!r}")
+            stub = stub.replace("assert sql ==", "raise Error('secret-test-password'); assert sql ==")
+            result = self.run_cli("query", "--profile", "local", "--sql", sql, stub=stub)
+            self.assertEqual(result.returncode, 5, result.stdout + result.stderr)
+            self.assertEqual(json.loads(result.stdout)["error"]["code"], code)
+            self.assertNotIn("secret-test-password", result.stdout + result.stderr)
+
+    def test_query_setup_failure_prevents_user_sql(self):
+        sql = "SELECT 1"
+        for setup in ("SET default_transaction_read_only", "SHOW transaction_read_only",
+                      "SET standard_conforming_strings", "SHOW standard_conforming_strings",
+                      "SET statement_timeout"):
+            stub = query_stub(sql).replace("self.sql = sql",
+                    f"self.sql = sql\n        if sql.startswith({setup!r}): raise Error('setup failed')")
+            result = self.run_cli("query", "--profile", "local", "--sql", sql, stub=stub)
+            self.assertEqual(result.returncode, 4, result.stdout + result.stderr)
+            self.assertEqual(json.loads(result.stdout)["error"]["code"], "CONNECTION_FAILED")
+
+    def test_query_shared_scalars_and_unsupported_types(self):
+        sql = "SELECT 1"
+        values = "[(None, __import__('decimal').Decimal('12.30'), __import__('datetime').datetime(2026,1,2,3,4,5), bytes([0,255]))]"
+        result = self.run_cli("query", "--profile", "local", "--sql", sql,
+                              stub=query_stub(sql, values, "['n','d','t','b']"))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(json.loads(result.stdout)["rows"], [{"n": None, "d": "12.30",
+                         "t": "2026-01-02T03:04:05", "b": "0x00ff"}])
+        for values, columns in (("[(True,)]", "['v']"), ("[({},)]", "['v']"),
+                                ("[(1,2)]", "['v','v']")):
+            result = self.run_cli("query", "--profile", "local", "--sql", sql,
+                                  stub=query_stub(sql, values, columns))
+            self.assertEqual(result.returncode, 5, result.stdout + result.stderr)
+            self.assertEqual(json.loads(result.stdout)["error"]["code"], "RESULT_ENCODING_FAILED")
 
     def test_profiles_reports_explicit_postgresql_driver(self):
         result = self.run_cli("profiles")
@@ -90,12 +206,12 @@ def connect(**kwargs): return Connection()
         self.assertEqual((profile["driver"], profile["database"], profile["port"]),
                          ("mysql", None, 3306))
 
-    def test_query_is_unavailable_before_driver_access(self):
-        result = self.run_cli("query", "--profile", "local", "--sql", "SELECT 1",
+    def test_unsafe_query_is_rejected_before_driver_access(self):
+        result = self.run_cli("query", "--profile", "local", "--sql", "SELECT 1; SELECT 2",
                               stub="raise AssertionError('must not import driver')")
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
         self.assertEqual(json.loads(result.stdout)["error"]["code"],
-                         "POSTGRESQL_QUERY_UNAVAILABLE")
+                         "SQL_MULTIPLE_STATEMENTS")
 
     def test_missing_optional_driver_explains_installation(self):
         result = self.run_cli("validate", "--profile", "local", "--connect",

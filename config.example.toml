@@ -31,4 +31,6 @@ tls = "required"
 # Optional private CA bundle; required verifies the certificate and hostname.
 # tls_ca_file = "/path/to/ca.pem"
 connect_timeout_seconds = 5
-# Only profiles/validate/validate --connect are available for PostgreSQL here.
+# PostgreSQL server-side statement timeout; not an end-to-end deadline.
+query_timeout_seconds = 30
+max_rows = 1000

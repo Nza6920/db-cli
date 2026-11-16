@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from db_query.config import Profile
-from db_query.errors import RunnerError
 from db_query.mysql_runner import ConnectionResult, QueryResult
 
 
@@ -16,6 +15,7 @@ def validate_connection(profile: Profile, password: str) -> ConnectionResult:
 
 def run_query(profile: Profile, password: str, sql: str) -> QueryResult:
     if profile.driver == "postgresql":
-        raise RunnerError("POSTGRESQL_QUERY_UNAVAILABLE", "PostgreSQL queries are not available", 2)
-    from db_query.mysql_runner import run_query as run
+        from db_query.postgresql_runner import run_query as run
+    else:
+        from db_query.mysql_runner import run_query as run
     return run(profile, password, sql)

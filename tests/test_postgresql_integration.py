@@ -73,14 +73,15 @@ class PostgreSqlIntegrationMixin:
         subprocess.run(["docker", "rm", "--force", cls.container], capture_output=True)
 
     def run_validate(self, *, tls: str = "required", host: str = "localhost",
-                     ca: str | None = "ca.pem", password: str = "integration-password"):
+                     ca: str | None = "ca.pem", password: str = "integration-password",
+                     query: str | None = None, output: str = "json"):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.toml"
             config = (
                 '[profiles.local]\ndriver = "postgresql"\n'
                 f'url = "postgresql://{host}:{self.port}/integration"\n'
                 'username = "postgres"\npassword_env = "DB_QUERY_PG_TEST_PASSWORD"\n'
-                f'environment = "test"\ntls = "{tls}"\n'
+                f'environment = "test"\ntls = "{tls}"\nquery_timeout_seconds = 1\n'
             )
             if ca is not None:
                 config += f'tls_ca_file = "{Path(self.temporary.name) / ca}"\n'
@@ -88,8 +89,59 @@ class PostgreSqlIntegrationMixin:
             path.chmod(0o600)
             env = {**os.environ, "DB_QUERY_CONFIG": str(path),
                    "DB_QUERY_PG_TEST_PASSWORD": password, "PYTHONPATH": str(ROOT / "src")}
-            return subprocess.run([sys.executable, "-m", "db_query", "validate", "--profile",
-                                   "local", "--connect"], env=env, capture_output=True, text=True)
+            arguments = ["validate", "--profile", "local", "--connect"] if query is None else [
+                "query", "--profile", "local", "--sql", query, "--format", output]
+            return subprocess.run([sys.executable, "-m", "db_query", *arguments],
+                                  env=env, capture_output=True, text=True, timeout=20)
+
+    def test_select_shared_types_and_output_formats(self):
+        sql = """SELECT 42::integer AS n, 'text'::text AS t, 12.30::numeric AS d,
+                 TIMESTAMP '2026-01-02 03:04:05' AS dt,
+                 decode('00ff','hex') AS b, NULL::text AS empty"""
+        for output in ("json", "csv", "table"):
+            result = self.run_validate(query=sql, output=output)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)  # type: ignore[attr-defined]
+            if output == "json":
+                self.assertEqual(json.loads(result.stdout)["rows"], [{  # type: ignore[attr-defined]
+                    "n": 42, "t": "text", "d": "12.30", "dt": "2026-01-02T03:04:05",
+                    "b": "0x00ff", "empty": None}])
+            else:
+                self.assertIn("0x00ff", result.stdout)  # type: ignore[attr-defined]
+
+    def test_postgresql_lexical_forms_parse_on_server(self):
+        sql = r"""SELECT $tag$; DROP TABLE x; FOR UPDATE$tag$ AS "update",
+                  E'escaped\\text' AS escaped, U&'d\0061ta' AS unicode,
+                  1 /* outer /* nested */ comment */ AS n"""
+        result = self.run_validate(query=sql)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)  # type: ignore[attr-defined]
+        self.assertEqual(json.loads(result.stdout)["rows"][0]["unicode"], "data")  # type: ignore[attr-defined]
+
+    def test_server_statement_timeout_is_structured(self):
+        result = self.run_validate(query="SELECT pg_sleep(3)")
+        self.assertEqual(result.returncode, 5, result.stdout + result.stderr)  # type: ignore[attr-defined]
+        self.assertEqual(json.loads(result.stdout)["error"]["code"], "QUERY_TIMEOUT")  # type: ignore[attr-defined]
+
+    def test_read_only_session_blocks_write_inside_ordinary_function(self):
+        # Fixture setup is administrative; assertions remain at the CLI seam.
+        fixture = """CREATE TABLE IF NOT EXISTS fixture_writes (n integer);
+        CREATE OR REPLACE FUNCTION fixture_write() RETURNS integer LANGUAGE plpgsql AS $$
+        BEGIN INSERT INTO fixture_writes VALUES (1); RETURN 1; END $$;"""
+        subprocess.run(["docker", "exec", self.container, "psql", "-U", "postgres",
+                        "-d", "integration", "-v", "ON_ERROR_STOP=1", "-c", fixture],
+                       check=True, capture_output=True, text=True)
+        result = self.run_validate(query="SELECT fixture_write()")
+        self.assertEqual(result.returncode, 5, result.stdout + result.stderr)  # type: ignore[attr-defined]
+        error = json.loads(result.stdout)["error"]
+        self.assertEqual((error["code"], error["sqlstate"]),  # type: ignore[attr-defined]
+                         ("QUERY_FAILED", "25006"))
+
+    def test_real_table_limit_and_aggregate_exemption(self):
+        for sql, count in (("SELECT n FROM generate_series(1,5) AS n LIMIT 2", 2),
+                           ("SELECT COUNT(*) AS total FROM generate_series(1,5)", 1)):
+            result = self.run_validate(query=sql)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)  # type: ignore[attr-defined]
+            self.assertEqual(json.loads(result.stdout)["row_count"], count)  # type: ignore[attr-defined]
+
 
     def test_trusted_ca_and_hostname_establish_verified_read_only_session(self):
         result = self.run_validate()
