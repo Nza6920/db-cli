@@ -118,6 +118,46 @@ TLS defaults to `required`, which validates the system trust chain and hostname.
 only when TLS is unavailable. `disabled` prohibits TLS. A production profile
 may explicitly choose a weaker mode, but the command emits a scoped warning.
 
+## PostgreSQL connection checks (development checkout)
+
+Install the optional driver from this checkout with `pip install '.[postgresql]'`
+(or `pipx install --force '.[postgresql]'`). MySQL-only installations need no
+PostgreSQL driver. Selecting PostgreSQL without the extra returns a structured
+`DRIVER_NOT_INSTALLED` error with installation instructions.
+
+Profiles default to `driver = "mysql"` when omitted. Set `driver = "postgresql"`
+explicitly with a `postgresql://host[:port]/database` URL; port defaults to 5432
+and the database is mandatory. Driver/URL mismatches, embedded credentials,
+Unix sockets, multiple hosts and URL options are rejected. MySQL database names
+remain optional. Both backends use `username` and `password_env`.
+
+```toml
+[profiles.pg]
+driver = "postgresql"
+url = "postgresql://db.example.cn:5432/analytics"
+username = "readonly_user"
+password_env = "DB_QUERY_PG_PASSWORD"
+environment = "staging"
+tls = "required"
+# Optional PostgreSQL CA bundle for private certificates:
+# tls_ca_file = "/path/to/ca.pem"
+```
+
+`profiles`, offline `validate`, and `validate --profile pg --connect` support
+PostgreSQL 16, 17 and 18. Connection checks enable and verify a read-only session
+before reporting success and return the actual `tls_active` state. Exact
+production-profile confirmation also applies. PostgreSQL `query` is intentionally
+unavailable at this stage and returns `POSTGRESQL_QUERY_UNAVAILABLE` before driver
+access; the SQL and output descriptions below currently apply to MySQL only.
+
+PostgreSQL TLS `required` uses certificate and hostname verification (`verify-full`)
+with system trust by default, or `tls_ca_file` for a private CA. `preferred` requests
+TLS with plaintext fallback, without certificate verification; `disabled` prohibits
+TLS. MySQL TLS behavior is unchanged. `connect_timeout_seconds` controls connection
+establishment. PostgreSQL query timeout support will be added with user queries;
+MySQL `query_timeout_seconds` continues to control read/write socket timeouts.
+Neither setting is an end-to-end deadline.
+
 ## Query
 
 Pass agent-generated SQL over stdin so it does not appear in process arguments:
@@ -223,10 +263,11 @@ Use Python 3.11+ and install the development dependencies in a virtual environme
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-python3 -m pip install -e '.[dev]'
+python3 -m pip install -e '.[dev,postgresql]'
 python3 -m mypy
 python3 -m unittest discover -s tests -v
 DB_QUERY_RUN_MYSQL_INTEGRATION=1 python3 -m unittest discover -s tests -p test_mysql_integration.py -v
+DB_QUERY_RUN_POSTGRESQL_INTEGRATION=1 python3 -m unittest discover -s tests -p test_postgresql_integration.py -v
 ```
 
 On Windows PowerShell, activate the environment with `.venv\Scripts\Activate.ps1`.
@@ -236,5 +277,8 @@ annotations. Its version and configuration live in `pyproject.toml`; the
 configuration scopes its missing-import exemption to PyMySQL. GitHub Actions runs
 the same type check on pushes and pull requests using Python 3.11.
 
-The integration suite creates disposable local MySQL containers and never
-accesses UAT or production.
+The integration suites create disposable local MySQL and PostgreSQL 16/17/18
+containers and never access UAT or production. PostgreSQL tests require Docker and
+OpenSSL, generate disposable CA/server certificates, and cover trusted TLS, bad CA,
+hostname mismatch, authentication, and read-only connection initialization. Report
+skipped integration tests separately; a skip does not establish version support.

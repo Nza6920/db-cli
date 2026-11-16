@@ -108,6 +108,43 @@ TLS 默认为 `required`，会验证系统信任链和 hostname。`preferred` �
 production profile 可以显式选择较弱模式，但命令会输出与该 profile 相关的
 警告。
 
+## PostgreSQL 连接检查（开发版本）
+
+在当前 checkout 执行 `pip install '.[postgresql]'`（或
+`pipx install --force '.[postgresql]'`）安装可选驱动。仅使用 MySQL 无需安装。
+选用 PostgreSQL 却未安装驱动时，返回含安装提示的结构化
+`DRIVER_NOT_INSTALLED` 错误。
+
+省略 `driver` 默认为 `mysql`。PostgreSQL 必须显式配置 `driver = "postgresql"`，
+URL 格式为 `postgresql://host[:port]/database`；默认端口 5432，必须指定数据库。
+拒绝 driver/URL 不匹配、URL 内嵌凭据、Unix socket、多主机及 URL 参数。
+MySQL 继续允许省略数据库。两个后端均使用 `username` 和 `password_env`。
+
+```toml
+[profiles.pg]
+driver = "postgresql"
+url = "postgresql://db.example.cn:5432/analytics"
+username = "readonly_user"
+password_env = "DB_QUERY_PG_PASSWORD"
+environment = "staging"
+tls = "required"
+# 私有 CA 可选配置：
+# tls_ca_file = "/path/to/ca.pem"
+```
+
+`profiles`、离线 `validate` 和 `validate --profile pg --connect` 支持
+PostgreSQL 16、17、18。连接检查启用并确认只读会话后才返回成功，使用
+`tls_active` 报告实际 TLS 状态。production 仍要求精确 profile 确认。
+本阶段 PostgreSQL `query` 返回 `POSTGRESQL_QUERY_UNAVAILABLE`，不会访问驱动；
+下文 SQL 策略和结果格式目前仅适用于 MySQL。
+
+PostgreSQL 的 TLS `required` 使用 `verify-full` 验证证书及主机名，默认使用系统
+信任根，私有 CA 使用 `tls_ca_file`。`preferred` 优先 TLS，可回退明文，不验证
+证书；`disabled` 禁止 TLS。MySQL TLS 行为保持不变。
+`connect_timeout_seconds` 控制连接建立超时。PostgreSQL 查询超时将在开放查询时
+实现；MySQL 的 `query_timeout_seconds` 继续映射到 read/write socket timeout。
+两者都不是端到端总时限。
+
 ## 查询
 
 通过 stdin 传入 agent 生成的 SQL，避免 SQL 出现在进程参数中：
@@ -202,10 +239,11 @@ $db-query 使用 prod profile 查询项目 252143 最近 20 条运单
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-python3 -m pip install -e '.[dev]'
+python3 -m pip install -e '.[dev,postgresql]'
 python3 -m mypy
 python3 -m unittest discover -s tests -v
 DB_QUERY_RUN_MYSQL_INTEGRATION=1 python3 -m unittest discover -s tests -p test_mysql_integration.py -v
+DB_QUERY_RUN_POSTGRESQL_INTEGRATION=1 python3 -m unittest discover -s tests -p test_postgresql_integration.py -v
 ```
 
 Windows PowerShell 使用 `.venv\Scripts\Activate.ps1` 激活虚拟环境。
@@ -215,4 +253,7 @@ Mypy 检查 `src/db_query` 和 `tests`，包括未标注类型的函数体。
 第三方类型信息的错误。GitHub Actions 在推送和 pull request 时使用 Python 3.11
 运行同一类型检查命令。
 
-集成测试只创建一次性本地 MySQL 容器，不访问 UAT 或 production。
+集成测试仅创建一次性本地 MySQL 和 PostgreSQL 16/17/18 容器，不访问 UAT 或
+production。PostgreSQL 测试需要 Docker 和 OpenSSL，生成临时 CA 与服务器证书，
+覆盖可信 TLS、错误 CA、主机名不匹配、认证及只读会话初始化。跳过项必须单独
+报告，不能视为对应版本的支持证据。
