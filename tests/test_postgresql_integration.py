@@ -143,6 +143,33 @@ class PostgreSqlIntegrationMixin:
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)  # type: ignore[attr-defined]
         self.assertEqual(json.loads(result.stdout)["rows"][0]["unicode"], "data")  # type: ignore[attr-defined]
 
+    def test_line_comment_newlines_match_server_and_cannot_hide_policy_tokens(self):
+        for newline in ("\r", "\r\n", "\n"):
+            # Both a leading comment and arithmetic continuation must reach PostgreSQL
+            # unchanged: treating CR as comment text would return 1 instead of 3.
+            sql = f"-- ignored DELETE;{newline}SELECT 1 -- ignored{newline}+ 2 AS n"
+            with self.subTest(newline=newline):  # type: ignore[attr-defined]
+                result = self.run_validate(query=sql)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)  # type: ignore[attr-defined]
+                self.assertEqual(json.loads(result.stdout)["rows"], [{"n": 3}])  # type: ignore[attr-defined]
+            for suffix, code in (("; SELECT 2", "SQL_MULTIPLE_STATEMENTS"),
+                                 ("FOR UPDATE", "SQL_NOT_READ_ONLY"),
+                                 ("INTO TEMP hidden", "SQL_NOT_READ_ONLY"),
+                                 ("FROM generate_series(1,3)", "SQL_LIMIT_REQUIRED")):
+                with self.subTest(newline=newline, suffix=suffix):  # type: ignore[attr-defined]
+                    result = self.run_validate(query=f"SELECT 1 -- ignored{newline}{suffix}")
+                    self.assertEqual(result.returncode, 2, result.stdout + result.stderr)  # type: ignore[attr-defined]
+                    self.assertEqual(json.loads(result.stdout)["error"]["code"], code)  # type: ignore[attr-defined]
+
+    def test_ordinary_string_functions_execute_without_rewriting(self):
+        sql = ("SELECT substring('abcdef' FROM 1 FOR 2) AS part, "
+               "overlay('Txxxxas' PLACING 'hom' FROM 2 FOR 4) AS overlaid, "
+               "replace('abc','a','z') AS replaced")
+        result = self.run_validate(query=sql)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)  # type: ignore[attr-defined]
+        self.assertEqual(json.loads(result.stdout)["rows"], [  # type: ignore[attr-defined]
+            {"part": "ab", "overlaid": "Thomas", "replaced": "zbc"}])
+
     def test_server_statement_timeout_is_structured(self):
         result = self.run_validate(query="SELECT pg_sleep(3)")
         self.assertEqual(result.returncode, 5, result.stdout + result.stderr)  # type: ignore[attr-defined]

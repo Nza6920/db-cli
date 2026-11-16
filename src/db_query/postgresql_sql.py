@@ -29,7 +29,7 @@ DANGEROUS_FUNCTIONS = {
 DANGEROUS_PREFIXES = ("PG_ADVISORY_", "PG_TRY_ADVISORY_", "PG_CREATE_", "PG_DROP_",
                       "PG_REPLICATION_ORIGIN_", "PG_COPY_", "PG_FILE_")
 FORBIDDEN_WORDS = WRITE_WORDS | {"COPY", "MERGE", "VACUUM", "REFRESH", "PREPARE", "EXECUTE",
-                                  "INTO", "FOR", "LISTEN", "NOTIFY", "UNLISTEN"}
+                                  "INTO", "LISTEN", "NOTIFY", "UNLISTEN"}
 
 
 def invalid(message: str) -> SqlSafetyError:
@@ -46,8 +46,8 @@ def tokenize(sql: str) -> list[PgToken]:
             i += 1
             continue
         if sql.startswith("--", i):
-            end = sql.find("\n", i + 2)
-            i = len(sql) if end < 0 else end + 1
+            newline = re.search(r"[\r\n]", sql[i + 2:])
+            i = len(sql) if newline is None else i + 2 + newline.end()
             continue
         if sql.startswith("/*", i):
             nesting = 1
@@ -189,6 +189,8 @@ def parenthesized(tokens: list[PgToken], index: int) -> tuple[list[PgToken], int
 def validate_statement(tokens: list[PgToken], max_rows: int, require_limit: bool = True,
                        query_only: bool = False) -> None:
     tokens = unwrap_query(normalized(tokens))
+    if not tokens:
+        raise invalid("missing query")
     validate_safe_tokens(tokens)
     if tokens[0].keyword("WITH"):
         i = 1
@@ -295,8 +297,18 @@ def validate_select(tokens: list[PgToken], max_rows: int, require_limit: bool = 
 
 def validate_safe_tokens(tokens: list[PgToken]) -> None:
     for i, token in enumerate(tokens):
+        is_call = i + 1 < len(tokens) and tokens[i + 1].value == "("
         if token.kind == "word" and token.value in FORBIDDEN_WORDS:
-            raise SqlSafetyError("SQL_NOT_READ_ONLY", "only read-only SQL is allowed")
+            if not (token.keyword("REPLACE") and is_call):
+                raise SqlSafetyError("SQL_NOT_READ_ONLY", "only read-only SQL is allowed")
+        # UPDATE variants are already forbidden above. FOR also appears in
+        # ordinary substring/overlay arguments, so match the SHARE lock clauses.
+        if token.keyword("FOR"):
+            following = tokens[i + 1:i + 3]
+            if (following and following[0].keyword("SHARE")) or (
+                    len(following) == 2 and following[0].keyword("KEY")
+                    and following[1].keyword("SHARE")):
+                raise SqlSafetyError("SQL_NOT_READ_ONLY", "locking queries are not allowed")
         if token.kind in {"word", "identifier"} and i + 1 < len(tokens) and tokens[i + 1].value == "(":
             name = token.value.upper()
             if name in DANGEROUS_FUNCTIONS or name.startswith(DANGEROUS_PREFIXES):

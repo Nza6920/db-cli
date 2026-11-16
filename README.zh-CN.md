@@ -146,7 +146,9 @@ LIMIT；EXPLAIN 包装查询仍检查写入、锁及危险调用。所有显式 
 选项（包括 false）、`SERIALIZE`、重复或未知选项均保守拒绝。支持 `VERBOSE`、`COSTS`、
 `SETTINGS`、`BUFFERS`、`WAL`、`TIMING`、`SUMMARY`、`GENERIC_PLAN`、`MEMORY` 及
 `FORMAT TEXT/XML/JSON/YAML`，具体选项是否可用还取决于服务器版本。
-词法识别 dollar quote、转义字符串、双引号标识符和嵌套注释；Unicode 转义标识符
+词法识别 dollar quote、转义字符串、双引号标识符和嵌套注释；行注释以 LF、CR 或
+CRLF 结束。允许 `substring`、`overlay`、`replace` 等普通字符串函数，仍拒绝行锁子句。
+空括号查询返回结构化 `SQL_INVALID` 错误。Unicode 转义标识符
 和转义字符串续行保守拒绝。多语句、写入、DDL、行锁、psql 元命令及已知修改
 会话/序列、获取 advisory lock、管理性修改函数在访问驱动前拒绝，也检查带引号及
 schema 限定的函数调用。任意自定义函数的副作用仍需数据库权限约束。

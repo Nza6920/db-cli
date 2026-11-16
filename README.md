@@ -156,7 +156,10 @@ is delivered unchanged. Table and set queries require an outer integer
 are not substitutes. Simple aggregate projections and queries without outer
 `FROM` retain their exemptions; this is not a universal output-row hard cap.
 Dollar strings, escape strings, quoted identifiers and nested comments are
-recognized. CTE bodies do not need independent row limits; their final query
+recognized. Line comments end at LF, CR or CRLF. Ordinary string functions
+including `substring`, `overlay` and `replace` are allowed; locking clauses remain
+rejected. Empty parenthesized queries return structured `SQL_INVALID` errors.
+CTE bodies do not need independent row limits; their final query
 follows the outer-result policy. `SHOW` and `EXPLAIN` are exempt from row limits.
 `EXPLAIN` still validates the wrapped query for writes, locks and dangerous calls.
 Every explicit `ANALYZE`/`ANALYSE` option (including false), `SERIALIZE`, duplicate

@@ -85,6 +85,54 @@ class PostgreSqlCliTests(unittest.TestCase):
                                       stub=query_stub(sql))
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_ordinary_string_functions_are_allowed_and_locks_remain_rejected(self):
+        for sql in ("SELECT substring('abcdef' FROM 1 FOR 2)",
+                    "SELECT overlay('Txxxxas' PLACING 'hom' FROM 2 FOR 4)",
+                    "SELECT replace('abc','a','z')"):
+            with self.subTest(sql=sql):
+                result = self.run_cli("query", "--profile", "local", "--sql", sql,
+                                      stub=query_stub(sql))
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        for sql in ("REPLACE INTO t VALUES (1)", "REPLACE('abc','a','z')",
+                    "WITH c AS (REPLACE INTO t VALUES (1)) SELECT 1",
+                    "SELECT 1 FOR SHARE", "SELECT 1 FOR KEY SHARE",
+                    "SELECT 1 FOR UPDATE", "SELECT 1 FOR NO KEY UPDATE",
+                    "SELECT * FROM (SELECT 1 FOR SHARE) AS s LIMIT 1"):
+            with self.subTest(sql=sql):
+                result = self.run_cli("query", "--profile", "local", "--sql", sql,
+                                      stub="raise AssertionError('must reject before import')")
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertEqual(json.loads(result.stdout)["error"]["code"], "SQL_NOT_READ_ONLY")
+
+    def test_empty_parenthesized_queries_return_structured_invalid_sql(self):
+        for sql in ("()", "(())", "(( /* comment */ ))", "EXPLAIN () SELECT 1",
+                    "EXPLAIN (())", "WITH c AS (()) SELECT 1"):
+            with self.subTest(sql=sql):
+                result = self.run_cli("query", "--profile", "local", "--sql", sql,
+                                      stub="raise AssertionError('must reject before import')")
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertEqual(json.loads(result.stdout)["error"]["code"], "SQL_INVALID")
+                self.assertNotIn("Traceback", result.stderr)
+
+    def test_line_comment_newlines_preserve_sql_and_expose_policy_tokens(self):
+        for newline in ("\r", "\r\n", "\n"):
+            sql = f"-- ignored DELETE;{newline}SELECT 1 AS n"
+            with self.subTest(newline=newline):
+                result = self.run_cli("query", "--profile", "local", "--sql", sql,
+                                      stub=query_stub(sql, "[(1,)]", "['n']"))
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(json.loads(result.stdout)["rows"], [{"n": 1}])
+            for suffix, code in (("; SELECT 2", "SQL_MULTIPLE_STATEMENTS"),
+                                 ("FOR UPDATE", "SQL_NOT_READ_ONLY"),
+                                 ("INTO TEMP hidden", "SQL_NOT_READ_ONLY"),
+                                 ("FROM generate_series(1,3)", "SQL_LIMIT_REQUIRED")):
+                sql = f"SELECT 1 -- ignored{newline}{suffix}"
+                with self.subTest(newline=newline, suffix=suffix):
+                    result = self.run_cli("query", "--profile", "local", "--sql", sql,
+                                          stub="raise AssertionError('must reject before import')")
+                    self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                    self.assertEqual(json.loads(result.stdout)["error"]["code"], code)
+
     def test_postgresql_rejections_happen_before_driver_import(self):
         rejected = [
             "SELECT * FROM t", "SELECT * FROM t FETCH FIRST 1 ROW ONLY",
