@@ -2,10 +2,11 @@
 
 English | [简体中文](README.zh-CN.md)
 
-`db-cli` provides the profile-aware, read-only `db-query` command for MySQL.
-Version 0.3.1 connects directly through pinned Python dependencies, so a normal
-pipx installation does not require a separate SQL client executable. It accepts
-MySQL and JDBC MySQL URLs and keeps passwords out of persistent configuration.
+`db-cli` provides the profile-aware, read-only `db-query` command for MySQL
+and, in the current checkout, optional PostgreSQL support. It connects directly
+through pinned Python dependencies without a separate SQL client executable
+and keeps passwords out of persistent configuration. The release installation
+below is pinned to v0.3.1; use the checkout installation for PostgreSQL.
 
 ## Capabilities
 
@@ -21,9 +22,9 @@ MySQL and JDBC MySQL URLs and keeps passwords out of persistent configuration.
   bounded by the selected profile's `max_rows` (default 1000).
 - Require an exact `--confirm-profile` match for production queries and
   production connection tests.
-- Open every connection with autocommit enabled, local infile disabled, and a
-  session transaction mode that is set to and verified as read-only before SQL
-  executes.
+- Open every connection with autocommit enabled and a session transaction mode
+  that is set to and verified as read-only before SQL executes. MySQL also
+  disables local infile.
 - Support `required`, `preferred`, and `disabled` TLS modes and expose the
   negotiated state from `validate --connect` as `tls_active`.
 - Return stable JSON by default, standard CSV, or SQL-style tables.
@@ -79,7 +80,7 @@ Bash:
 ```bash
 export DB_QUERY_PROD_PASSWORD='<password>'
 db-query profiles
-db-query validate
+db-query validate --profile prod
 ```
 
 PowerShell:
@@ -90,7 +91,7 @@ New-Item -ItemType Directory -Force (Split-Path $configPath) | Out-Null
 Copy-Item .\config.example.toml $configPath
 $env:DB_QUERY_PROD_PASSWORD = '<password>'
 db-query profiles
-db-query validate
+db-query validate --profile prod
 ```
 
 Configuration lookup order is `--config`, `DB_QUERY_CONFIG`,
@@ -105,6 +106,12 @@ Windows ACLs. Plaintext password fields are rejected. TOML must be UTF-8; when
 using Windows PowerShell 5.1, preserve the example file's encoding or use an
 editor that saves UTF-8.
 
+Offline `validate` checks password environment variables without opening a
+connection. Without `--profile`, it checks all profiles, so the complete example
+requires `DB_QUERY_PROD_PASSWORD`, `DB_QUERY_UAT_PASSWORD`, and
+`DB_QUERY_PG_PASSWORD`. All profile definitions are parsed even when selecting
+one profile. `profiles` reports password availability without requiring passwords.
+
 Supported JDBC URL options are `connectTimeout`, `socketTimeout`, and `useSSL`.
 Explicit profile timeout and TLS fields take precedence, followed by JDBC URL
 options, then the five-second connection and 30-second query defaults. Unknown
@@ -113,7 +120,7 @@ timeout; query timeout maps to its read and write socket timeouts. A
 `QUERY_TIMEOUT` therefore means a driver/socket timeout, not a strict total
 wall-clock deadline.
 
-TLS defaults to `required`, which validates the system trust chain and hostname.
+For MySQL, TLS defaults to `required`, which validates the system trust chain and hostname.
 `preferred` uses TLS when the server offers it and permits plaintext fallback
 only when TLS is unavailable. `disabled` prohibits TLS. A production profile
 may explicitly choose a weaker mode, but the command emits a scoped warning.
@@ -242,7 +249,7 @@ booleans, strings, floats, zero, and negative values are configuration errors.
 Profiles have independent limits; there is no global, environment-variable, or
 CLI override. An over-limit error reports the effective profile limit.
 
-The safety scanner accepts one supported read-only statement. Detail reads need
+For MySQL, the safety scanner accepts one supported read-only statement. Detail reads need
 an outer literal `LIMIT`; both `LIMIT count OFFSET offset` and `LIMIT offset,count`
 check the count against `max_rows`. Only simple projections consisting entirely
 of `COUNT`, `SUM`, `AVG`, `MIN`, or `MAX` calls are exempt as single-row aggregates;
@@ -269,6 +276,30 @@ Validate configuration offline by default, or explicitly test one connection:
 db-query validate --profile uat --connect
 db-query validate --profile prod --connect --confirm-profile prod
 ```
+
+## Command reference
+
+Place the global `--config PATH` option before the subcommand.
+
+| Command | Options and behavior |
+| --- | --- |
+| `profiles` | List profiles, drivers, endpoints, TLS modes and password availability as JSON. |
+| `validate` | Optional `--profile NAME`; offline by default. `--connect` requires a profile; production also requires `--confirm-profile NAME`. |
+| `query` | Requires `--profile NAME` and exactly one of `--stdin` or `--sql TEXT`. Optional `--format json\|csv\|table` and `--confirm-profile NAME`. |
+| `--version` | Print the installed distribution version without loading configuration. |
+
+Results and structured application errors go to stdout; warnings go to stderr.
+Errors use `{"ok": false, "error": {"code": "...", "message": "..."}}`,
+including when CSV or table output was requested. Argument parsing errors use
+the standard argparse stderr output instead.
+
+| Exit code | Meaning |
+| --- | --- |
+| 0 | Success |
+| 2 | Invalid arguments, configuration, profile selection, or SQL policy rejection |
+| 3 | Missing password environment variable or production confirmation |
+| 4 | Driver unavailable or connection/session initialization failure |
+| 5 | Query, timeout, or result encoding failure |
 
 ## Skill
 

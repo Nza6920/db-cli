@@ -2,9 +2,10 @@
 
 [English](README.md) | 简体中文
 
-`db-cli` 提供支持 profile 的只读 MySQL 命令 `db-query`。0.3.1 版本通过固定
-版本的 Python 依赖直接连接数据库，因此正常的 pipx 安装不再需要单独的 SQL
-客户端。它接受 MySQL 和 JDBC MySQL URL，并避免将密码写入持久化配置。
+`db-cli` 提供支持 profile 的只读查询命令 `db-query`，支持 MySQL，
+当前 checkout 还包含可选的 PostgreSQL 支持。它通过固定版本的 Python 依赖
+直接连接数据库，不需要单独的 SQL 客户端，并避免将密码写入持久化配置。
+下方 release 安装命令固定为 v0.3.1；PostgreSQL 请使用 checkout 安装方式。
 
 ## 功能
 
@@ -19,8 +20,8 @@
   profile 的 `max_rows`（默认 1000）。
 - production 查询和 production 连接测试必须提供完全匹配的
   `--confirm-profile`。
-- 每个连接启用 autocommit、禁用 local infile，并在执行 SQL 前将 session
-  transaction mode 设置为只读并验证结果。
+- 每个连接启用 autocommit，并在执行 SQL 前将 session transaction mode
+  设置为只读并验证结果；MySQL 额外禁用 local infile。
 - 支持 `required`、`preferred` 和 `disabled` TLS 模式；
   `validate --connect` 通过 `tls_active` 返回实际协商状态。
 - 默认返回稳定 JSON，也支持标准 CSV 和 SQL 风格 table。
@@ -73,7 +74,7 @@ Bash：
 ```bash
 export DB_QUERY_PROD_PASSWORD='<password>'
 db-query profiles
-db-query validate
+db-query validate --profile prod
 ```
 
 PowerShell：
@@ -84,7 +85,7 @@ New-Item -ItemType Directory -Force (Split-Path $configPath) | Out-Null
 Copy-Item .\config.example.toml $configPath
 $env:DB_QUERY_PROD_PASSWORD = '<password>'
 db-query profiles
-db-query validate
+db-query validate --profile prod
 ```
 
 配置查找顺序为 `--config`、`DB_QUERY_CONFIG`、
@@ -97,13 +98,18 @@ POSIX 系统检查，本工具不审计 Windows ACL。明文密码字段会被�
 使用 UTF-8；使用 Windows PowerShell 5.1 时，请保留示例文件编码，或使用可将
 文件保存为 UTF-8 的编辑器。
 
+离线 `validate` 会检查密码环境变量，但不会连接数据库。不指定 `--profile`
+时会检查所有 profile，因此完整示例需要设置 `DB_QUERY_PROD_PASSWORD`、
+`DB_QUERY_UAT_PASSWORD` 和 `DB_QUERY_PG_PASSWORD`。即使选定单个 profile，
+所有 profile 的配置定义仍会被解析。`profiles` 仅报告密码是否可用，不要求设置密码。
+
 支持的 JDBC URL 参数为 `connectTimeout`、`socketTimeout` 和 `useSSL`。
 显式 profile timeout 和 TLS 字段优先，其次是 JDBC URL 参数，最后使用 5 秒
 连接超时和 30 秒查询超时的默认值。未知 JDBC 参数会被拒绝。连接超时映射到
 driver connection timeout；查询超时映射到 read/write socket timeout。因此
 `QUERY_TIMEOUT` 表示 driver/socket 超时，而不是严格的总 wall-clock deadline。
 
-TLS 默认为 `required`，会验证系统信任链和 hostname。`preferred` 在服务端
+MySQL 的 TLS 默认为 `required`，会验证系统信任链和 hostname。`preferred` 在服务端
 提供 TLS 时使用 TLS，只在 TLS 不可用时允许明文回退。`disabled` 禁止 TLS。
 production profile 可以显式选择较弱模式，但命令会输出与该 profile 相关的
 警告。
@@ -214,7 +220,7 @@ binary 字段。
 布尔值、字符串、浮点数、零和负数均为配置错误。各 profile 独立生效，不提供
 全局配置、环境变量或 CLI 覆盖。超限错误会显示实际生效的上限。
 
-安全扫描器只接受一条受支持的只读语句。明细查询必须使用最外层字面量
+对于 MySQL，安全扫描器只接受一条受支持的只读语句。明细查询必须使用最外层字面量
 `LIMIT`；`LIMIT count OFFSET offset` 和 `LIMIT offset,count` 都按 count 与
 `max_rows` 比较。单行聚合豁免仅适用于投影全部为明确的 `COUNT`、`SUM`、
 `AVG`、`MIN`、`MAX` 调用，允许别名和多个聚合。分组、窗口函数、混合投影和
@@ -236,6 +242,30 @@ session 只读模式属于 defense in depth，不能替代数据库授权。
 db-query validate --profile uat --connect
 db-query validate --profile prod --connect --confirm-profile prod
 ```
+
+## 命令参考
+
+全局选项 `--config PATH` 必须放在子命令之前。
+
+| 命令 | 选项与行为 |
+| --- | --- |
+| `profiles` | 以 JSON 列出 profile、驱动、连接地址、TLS 模式和密码可用状态。 |
+| `validate` | 可选 `--profile NAME`，默认离线；`--connect` 必须指定 profile，production 还需要 `--confirm-profile NAME`。 |
+| `query` | 必须指定 `--profile NAME`，且 `--stdin` 与 `--sql TEXT` 必须二选一；可选 `--format json\|csv\|table` 和 `--confirm-profile NAME`。 |
+| `--version` | 打印已安装发行包的版本，不加载配置。 |
+
+结果和应用的结构化错误写入 stdout，警告写入 stderr。错误格式为
+`{"ok": false, "error": {"code": "...", "message": "..."}}`，
+即使请求 CSV 或 table 输出也保持此格式。命令行参数解析错误使用 argparse
+的标准 stderr 输出。
+
+| 退出码 | 含义 |
+| --- | --- |
+| 0 | 成功 |
+| 2 | 参数、配置、profile 选择错误，或 SQL 安全策略拒绝 |
+| 3 | 缺少密码环境变量或 production 确认 |
+| 4 | 驱动不可用，或连接、会话初始化失败 |
+| 5 | 查询、超时或结果编码失败 |
 
 ## Skill
 
