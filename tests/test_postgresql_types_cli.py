@@ -25,6 +25,8 @@ class PostgreSqlTypesCliTests(unittest.TestCase):
             __import__('uuid').UUID('12345678-1234-5678-1234-567812345678'))]"""
         result = self.query(values, "['yes','no','dt','t','id']")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIs(json.loads(result.stdout)["rows"][0]["yes"], True)
+        self.assertIs(json.loads(result.stdout)["rows"][0]["no"], False)
         self.assertEqual(json.loads(result.stdout)["rows"], [{
             "yes": True, "no": False, "dt": "2026-01-02T03:04:05+00:00",
             "t": "03:04:05+05:30", "id": "12345678-1234-5678-1234-567812345678"}])
@@ -38,6 +40,7 @@ class PostgreSqlTypesCliTests(unittest.TestCase):
             __import__('datetime').timedelta(hours=25, seconds=2), 42, 1.5)]"""
         result = self.query(values, "['obj','matrix','typed','sql_null','json_null','d','b','day','interval','n','f']")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIs(json.loads(result.stdout)["rows"][0]["obj"]["消息"][0], True)
         self.assertEqual(json.loads(result.stdout)["rows"], [{
             "obj": {"消息": [True, None, {"n": 1.5, "s": 'a,"b'}]},
             "matrix": [[1, None], [2, 3]],

@@ -199,7 +199,12 @@ class PostgreSqlIntegrationMixin:
                 result = self.run_validate(query=sql, output=output)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)  # type: ignore[attr-defined]
                 if output == 'json':
-                    self.assertEqual(json.loads(result.stdout)['rows'], [expected])  # type: ignore[attr-defined]
+                    row = json.loads(result.stdout)['rows'][0]
+                    self.assertIs(row['yes'], True)  # type: ignore[attr-defined]
+                    self.assertIs(row['no'], False)  # type: ignore[attr-defined]
+                    self.assertIs(row['obj']['nested'][0], True)  # type: ignore[attr-defined]
+                    self.assertIs(row['doc']['items'][2][0], False)  # type: ignore[attr-defined]
+                    self.assertEqual(row, expected)  # type: ignore[attr-defined]
                 elif output == 'csv':
                     row = next(csv.DictReader(io.StringIO(result.stdout)))
                     self.assertEqual(row['obj'], '{"nested":[true,null,{"text":"消息"}]}')  # type: ignore[attr-defined]
@@ -210,6 +215,19 @@ class PostgreSqlIntegrationMixin:
                     self.assertIn('{"items":[1,null,[false]]}', result.stdout)  # type: ignore[attr-defined]
                     self.assertIn('[[1,null],[2,3]]', result.stdout)  # type: ignore[attr-defined]
                     self.assertIn('03:04:05+05:30', result.stdout)  # type: ignore[attr-defined]
+
+    def test_explain_json_plan_remains_structured_or_compact_text(self):
+        for output in ('json', 'csv', 'table'):
+            result = self.run_validate(query='EXPLAIN (FORMAT JSON) SELECT 1', output=output)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)  # type: ignore[attr-defined]
+            if output == 'json':
+                plan = json.loads(result.stdout)['rows'][0]['QUERY PLAN']
+                self.assertEqual(plan[0]['Plan']['Node Type'], 'Result')  # type: ignore[attr-defined]
+            elif output == 'csv':
+                row = next(csv.DictReader(io.StringIO(result.stdout)))
+                self.assertIn('"Node Type":"Result"', row['QUERY PLAN'])  # type: ignore[attr-defined]
+            else:
+                self.assertIn('"Node Type":"Result"', result.stdout)  # type: ignore[attr-defined]
 
     def test_postgresql_empty_and_duplicate_type_results(self):
         for output in ('json', 'csv', 'table'):
