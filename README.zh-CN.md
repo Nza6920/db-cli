@@ -3,9 +3,9 @@
 [English](README.md) | 简体中文
 
 `db-cli` 提供支持 profile 的只读查询命令 `db-query`，支持 MySQL，
-当前 checkout 还包含可选的 PostgreSQL 支持。它通过固定版本的 Python 依赖
+以及可选的 PostgreSQL 支持。它通过固定版本的 Python 依赖
 直接连接数据库，不需要单独的 SQL 客户端，并避免将密码写入持久化配置。
-下方 release 安装命令固定为 v0.3.1；PostgreSQL 请使用 checkout 安装方式。
+下方 release 安装命令固定为 v0.4.0。
 
 ## 功能
 
@@ -33,7 +33,7 @@
 一起安装，不需要 `usql`。
 
 ```bash
-pipx install "git+https://github.com/Nza6920/db-cli.git@v0.3.1"
+pipx install "git+https://github.com/Nza6920/db-cli.git@v0.4.0"
 db-query --version
 db-query --help
 ```
@@ -49,6 +49,7 @@ db-query --help
 | v0.2.1 | PyMySQL 1.2.0、tabulate 0.10.0 | 无 |
 | v0.3.0 | PyMySQL 1.2.0、tabulate 0.10.0 | 无 |
 | v0.3.1 | PyMySQL 1.2.0、tabulate 0.10.0 | 无 |
+| v0.4.0 | PyMySQL 1.2.0、tabulate 0.10.0；可选 psycopg[binary] 3.3.8 | 无 |
 
 如需回滚 Windows 配置路径变更，请安装 v0.2.0：
 
@@ -114,10 +115,16 @@ MySQL 的 TLS 默认为 `required`，会验证系统信任链和 hostname。`pre
 production profile 可以显式选择较弱模式，但命令会输出与该 profile 相关的
 警告。
 
-## PostgreSQL 查询（开发版本）
+## PostgreSQL 查询
 
-在当前 checkout 执行 `pip install '.[postgresql]'`（或
-`pipx install --force '.[postgresql]'`）安装可选驱动。仅使用 MySQL 无需安装。
+安装包含 PostgreSQL 可选驱动的发布版本：
+
+```bash
+pipx install --force "db-query[postgresql] @ git+https://github.com/Nza6920/db-cli.git@v0.4.0"
+```
+
+本地 checkout 可执行 `pip install '.[postgresql]'` 或
+`pipx install --force '.[postgresql]'`。仅使用 MySQL 无需安装 PostgreSQL 驱动。
 选用 PostgreSQL 却未安装驱动时，返回含安装提示的结构化
 `DRIVER_NOT_INSTALLED` 错误。
 

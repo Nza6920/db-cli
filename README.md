@@ -3,10 +3,10 @@
 English | [简体中文](README.zh-CN.md)
 
 `db-cli` provides the profile-aware, read-only `db-query` command for MySQL
-and, in the current checkout, optional PostgreSQL support. It connects directly
+and optional PostgreSQL support. It connects directly
 through pinned Python dependencies without a separate SQL client executable
 and keeps passwords out of persistent configuration. The release installation
-below is pinned to v0.3.1; use the checkout installation for PostgreSQL.
+below is pinned to v0.4.0.
 
 ## Capabilities
 
@@ -37,7 +37,7 @@ Install the fixed GitHub release with pipx. PyMySQL, its RSA support, and
 tabulate are installed with the application; `usql` is not required.
 
 ```bash
-pipx install "git+https://github.com/Nza6920/db-cli.git@v0.3.1"
+pipx install "git+https://github.com/Nza6920/db-cli.git@v0.4.0"
 db-query --version
 db-query --help
 ```
@@ -54,6 +54,7 @@ repository root.
 | v0.2.1 | PyMySQL 1.2.0, tabulate 0.10.0 | none |
 | v0.3.0 | PyMySQL 1.2.0, tabulate 0.10.0 | none |
 | v0.3.1 | PyMySQL 1.2.0, tabulate 0.10.0 | none |
+| v0.4.0 | PyMySQL 1.2.0, tabulate 0.10.0; optional psycopg[binary] 3.3.8 | none |
 
 To roll back the Windows configuration-path changes, install v0.2.0:
 
@@ -125,10 +126,16 @@ For MySQL, TLS defaults to `required`, which validates the system trust chain an
 only when TLS is unavailable. `disabled` prohibits TLS. A production profile
 may explicitly choose a weaker mode, but the command emits a scoped warning.
 
-## PostgreSQL queries (development checkout)
+## PostgreSQL queries
 
-Install the optional driver from this checkout with `pip install '.[postgresql]'`
-(or `pipx install --force '.[postgresql]'`). MySQL-only installations need no
+Install the release with the optional PostgreSQL driver:
+
+```bash
+pipx install --force "db-query[postgresql] @ git+https://github.com/Nza6920/db-cli.git@v0.4.0"
+```
+
+For a local checkout, use `pip install '.[postgresql]'` or
+`pipx install --force '.[postgresql]'`. MySQL-only installations need no
 PostgreSQL driver. Selecting PostgreSQL without the extra returns a structured
 `DRIVER_NOT_INSTALLED` error with installation instructions.
 

@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "db-query"
-version = "0.3.1"
-description = "Profile-aware, read-only MySQL queries for agents and automation"
+version = "0.4.0"
+description = "Profile-aware, read-only MySQL and PostgreSQL queries for agents and automation"
 requires-python = ">=3.11"
 dependencies = ["PyMySQL[rsa]==1.2.0", "tabulate==0.10.0"]
 
