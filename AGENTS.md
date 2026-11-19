@@ -57,7 +57,14 @@ If there is no `.codegraph/` directory, skip CodeGraph entirely — indexing is 
 
 ## Agent skills
 
-- **Issues and specs:** read `docs/agents/issue-tracker.md` before tracker operations.
-- **Triage:** read `docs/agents/triage-labels.md` before categorizing or changing states.
-- **Domain:** read `docs/agents/domain.md` before code exploration; it defines when
-  to consult the glossary and ADRs.
+### Issue tracker
+
+任务和规格使用 Nza6920/db-cli 的 GitHub Issues；操作前读取 `docs/agents/issue-tracker.md`。
+
+### Triage labels
+
+使用五个默认 triage 标签；分类或更改状态前读取 `docs/agents/triage-labels.md`。
+
+### Domain docs
+
+采用 single-context 布局；探索代码前读取 `docs/agents/domain.md`。

@@ -1,12 +1,12 @@
 # Domain docs
 
 本项目采用 single-context 布局：
-- 仓库根目录 CONTEXT.md：领域术语。
+- 仓库根目录 GLOSSARY.md：领域术语。
 - docs/adr/：架构决策记录。
 
 ## 阅读规则
 
-探索代码前，读取已有的 CONTEXT.md 和相关 ADR。
+探索代码前，读取已有的 GLOSSARY.md 和相关 ADR。
 文件不存在时直接继续；由 domain-modeling 技能在实际
 明确术语或决策时按需创建。
 
